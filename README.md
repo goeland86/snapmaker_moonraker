@@ -67,6 +67,43 @@ curl http://localhost:7125/server/info
 curl http://localhost:7125/printer/info
 ```
 
+## Raspberry Pi Image Build
+
+The CI pipeline can build a self-contained Raspberry Pi 3 SD card image with Mainsail and snapmaker_moonraker pre-installed. Flash the image, boot, and control your J1S from a browser.
+
+### Building the Jenkins agent
+
+The Jenkins agent Docker image includes all dependencies needed to build the RPi image (Go, QEMU, parted, etc.):
+
+```bash
+docker build --network=host -t snapmaker-jenkins-agent -f image/Dockerfile.jenkins-agent .
+```
+
+### Building the image locally
+
+Cross-compile the binary, then run the image build script:
+
+```bash
+GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -ldflags="-s -w" -o snapmaker_moonraker-armv7 .
+sudo image/build-image.sh snapmaker_moonraker-armv7
+```
+
+This produces a `snapmaker-moonraker-rpi3-YYYYMMDD.img.xz` file ready to flash to an SD card.
+
+### What's on the image
+
+```
+[Browser] → [nginx :80] → [Mainsail static files]
+                        → proxy_pass → [snapmaker_moonraker :7125]
+                                            ↓
+                                  [Snapmaker J1S via SACP/HTTP]
+```
+
+- Raspberry Pi OS Lite (Bookworm, 32-bit)
+- nginx serving Mainsail on port 80
+- snapmaker_moonraker as a systemd service on port 7125
+- SSH enabled, hostname `snapmaker`
+
 ## SACP Protocol
 
 The SACP implementation in the `sacp/` package is adapted from source code in the following projects:

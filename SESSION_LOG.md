@@ -81,6 +81,88 @@ Implement a Moonraker-to-Snapmaker SACP bridge in Go, following a detailed plan 
 - Created GitHub repo: https://github.com/goeland86/snapmaker_moonraker
 - Pushed to `origin/main` via SSH.
 
+## Session 2 - 2026-02-08: Jenkins CI Pipeline for RPi 3 Image Build
+
+### Objective
+Create a Jenkins CI pipeline that builds a Raspberry Pi 3 SD card image with Mainsail (web UI) and the snapmaker_moonraker bridge pre-installed. Users flash the image and immediately control a Snapmaker J1S from a browser.
+
+### What Was Done
+
+#### Files Created (7 files, 335 lines)
+
+**`Jenkinsfile`** - Declarative pipeline with 3 stages:
+- **Build Go Binary** - Cross-compiles with `GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0`, stripped symbols (`-ldflags="-s -w"`)
+- **Build RPi Image** - Runs `sudo image/build-image.sh` with the ARM binary
+- **Publish to GitHub Release** - Only triggers on tag builds (`when { buildingTag() }`), uses `gh release create`
+- Post-build: archives `.img.xz` artifact and cleans workspace
+
+**`image/build-image.sh`** - Main image builder (runs as root on Jenkins agent):
+1. Downloads RPi OS Lite Bookworm 32-bit (2024-11-19 release)
+2. Decompresses and expands image by 512MB
+3. Grows root partition with `parted resizepart` + `resize2fs`
+4. Sets up loop device, mounts boot + root partitions
+5. Copies `qemu-arm-static` for ARM chroot emulation
+6. Mounts proc/sys/dev/pts and runs `chroot-install.sh` inside ARM environment
+7. Installs cross-compiled binary to `/opt/snapmaker-moonraker/`
+8. Copies rootfs overlay files (nginx config, systemd service, config, hostname)
+9. Creates `/home/pi/gcodes` directory, fixes ownership to UID 1000
+10. Shrinks with PiShrink, compresses with `xz -T0 -9`
+11. Full cleanup trap on EXIT (unmounts, loop device detach)
+
+**`image/chroot-install.sh`** - Runs inside ARM chroot (via QEMU):
+- Installs nginx + unzip via apt
+- Downloads latest Mainsail release zip from GitHub API
+- Extracts to `/var/www/mainsail`
+- Enables nginx, snapmaker-moonraker, and SSH services
+- Sets hostname to `snapmaker` in `/etc/hostname` and `/etc/hosts`
+- Cleans apt cache
+
+**`image/rootfs/` overlay files:**
+- `etc/nginx/sites-available/mainsail` - Serves Mainsail static files at `/`, proxies `/printer/`, `/server/`, `/access/`, `/machine/`, `/api/` and `/websocket` to port 7125 with WebSocket upgrade support, 512MB upload limit
+- `etc/systemd/system/snapmaker-moonraker.service` - Runs as pi user with restart-on-failure, after network-online.target
+- `home/pi/.snapmaker/config.yaml` - Default config with gcode dir `/home/pi/gcodes`
+- `etc/hostname` - Set to `snapmaker`
+
+### Architecture
+
+```
+Jenkins Pipeline:
+  1. Cross-compile snapmaker_moonraker for ARMv7
+  2. Download Raspberry Pi OS Lite (32-bit)
+  3. Mount image, chroot into it
+  4. Install: nginx, Mainsail static files, snapmaker_moonraker binary
+  5. Configure: systemd service, nginx reverse proxy, default config
+  6. Shrink + compress image
+  7. Upload to GitHub Releases (on tag only)
+```
+
+Final image stack on the Pi:
+```
+[Browser] → [nginx :80] → [Mainsail static files]
+                        → proxy_pass /websocket, /printer/*, /server/* → [snapmaker_moonraker :7125]
+                                                                              ↓
+                                                                    [Snapmaker J1S via SACP/HTTP]
+```
+
+### Jenkins Agent Requirements
+- Linux (Debian/Ubuntu preferred)
+- Go 1.22+
+- `qemu-user-static` (ARM chroot emulation)
+- `parted`, `e2fsprogs`, `xz-utils`, `systemd-container`
+- `gh` CLI (GitHub Releases)
+- Root/sudo access (mount/chroot)
+- ~10GB free disk space
+
+### Verification
+- ARM cross-compilation confirmed: `file` shows `ELF 32-bit LSB executable, ARM, EABI5, statically linked, stripped`
+- All scripts have executable permissions
+
+### Git
+- Committed as `1f51953` on `main`: "Add Jenkins CI pipeline to build Raspberry Pi 3 SD card image"
+- Pushed to `origin/main`
+
+---
+
 ## Next Steps (from the plan)
 
 ### Phase 2: Printer State + Control (partially done, needs real printer testing)
@@ -96,7 +178,7 @@ Implement a Moonraker-to-Snapmaker SACP bridge in Go, following a detailed plan 
 ### Phase 4: Polish
 - Reconnection logic (auto-reconnect on SACP disconnect)
 - Token refresh/persistence (tokens invalidate on printer power cycle)
-- Systemd service file for Pi deployment
+- ~~Systemd service file for Pi deployment~~ (done in Session 2 - Jenkins CI)
 - Better error handling and user-facing error messages
 - Printer discovery as a subcommand with interactive selection
 

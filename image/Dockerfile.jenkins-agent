@@ -1,0 +1,32 @@
+FROM jenkins/inbound-agent:latest
+
+USER root
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    qemu-user-static \
+    parted \
+    e2fsprogs \
+    xz-utils \
+    systemd-container \
+    wget \
+    unzip \
+    sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Go
+ARG GO_VERSION=1.22.5
+RUN wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz \
+    && rm go${GO_VERSION}.linux-amd64.tar.gz
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+# GitHub CLI
+ARG GH_VERSION=2.63.2
+RUN wget -q https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.deb \
+    && dpkg -i gh_${GH_VERSION}_linux_amd64.deb \
+    && rm gh_${GH_VERSION}_linux_amd64.deb
+
+# Allow jenkins user to run sudo (needed for mount/chroot in build-image.sh)
+RUN echo "jenkins ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/jenkins
+
+USER jenkins

@@ -1,0 +1,16 @@
+[Unit]
+Description=Snapmaker Moonraker Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/.snapmaker
+ExecStart=/opt/snapmaker-moonraker/snapmaker_moonraker -config /home/pi/.snapmaker/config.yaml
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

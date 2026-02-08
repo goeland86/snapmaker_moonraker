@@ -1,0 +1,215 @@
+package moonraker
+
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+)
+
+// registerPrinterHandlers sets up /printer/* routes.
+func (s *Server) registerPrinterHandlers() {
+	s.mux.HandleFunc("GET /printer/info", s.handlePrinterInfo)
+	s.mux.HandleFunc("GET /printer/objects/list", s.handleObjectsList)
+	s.mux.HandleFunc("GET /printer/objects/query", s.handleObjectsQuery)
+	s.mux.HandleFunc("POST /printer/objects/query", s.handleObjectsQuery)
+	s.mux.HandleFunc("POST /printer/gcode/script", s.handleGCodeScript)
+	s.mux.HandleFunc("POST /printer/print/start", s.handlePrintStart)
+	s.mux.HandleFunc("POST /printer/print/pause", s.handlePrintPause)
+	s.mux.HandleFunc("POST /printer/print/resume", s.handlePrintResume)
+	s.mux.HandleFunc("POST /printer/print/cancel", s.handlePrintCancel)
+	s.mux.HandleFunc("POST /printer/emergency_stop", s.handleEmergencyStop)
+}
+
+func (s *Server) handlePrinterInfo(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]interface{}{
+		"result": s.printerInfo(),
+	})
+}
+
+func (s *Server) printerInfo() map[string]interface{} {
+	state := "ready"
+	msg := ""
+	if !s.printerClient.Connected() {
+		state = "error"
+		msg = "Printer not connected"
+	}
+
+	snap := s.state.Snapshot()
+	if snap.PrinterState == "printing" {
+		state = "printing"
+	}
+
+	return map[string]interface{}{
+		"state":            state,
+		"state_message":    msg,
+		"hostname":         "snapmaker-moonraker",
+		"software_version": "v0.1.0-snapmaker",
+		"cpu_info":         "Snapmaker Moonraker Bridge",
+		"klipper_path":     "/opt/snapmaker_moonraker",
+		"python_path":      "",
+		"log_file":         "",
+		"config_file":      "",
+	}
+}
+
+func (s *Server) handleObjectsList(w http.ResponseWriter, r *http.Request) {
+	objects := &PrinterObjects{}
+	writeJSON(w, map[string]interface{}{
+		"result": map[string]interface{}{
+			"objects": objects.AvailableObjects(),
+		},
+	})
+}
+
+func (s *Server) handleObjectsQuery(w http.ResponseWriter, r *http.Request) {
+	objects := &PrinterObjects{}
+	snap := s.state.Snapshot()
+
+	// Parse requested objects from query params or body.
+	requested := make(map[string]interface{})
+
+	if r.Method == "GET" {
+		// Query string format: ?toolhead&extruder=temperature,target
+		for key, values := range r.URL.Query() {
+			if len(values) > 0 && values[0] != "" {
+				// Split comma-separated field list.
+				fields := splitFields(values[0])
+				ifaces := make([]interface{}, len(fields))
+				for i, f := range fields {
+					ifaces[i] = f
+				}
+				requested[key] = ifaces
+			} else {
+				requested[key] = nil
+			}
+		}
+	} else {
+		var body struct {
+			Objects map[string]interface{} `json:"objects"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+			requested = body.Objects
+		}
+	}
+
+	status := objects.Query(snap, requested)
+
+	writeJSON(w, map[string]interface{}{
+		"result": map[string]interface{}{
+			"eventtime": 0.0,
+			"status":    status,
+		},
+	})
+}
+
+func (s *Server) handleGCodeScript(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Script string `json:"script"`
+	}
+
+	// Try JSON body first.
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Script == "" {
+		// Fall back to query param.
+		body.Script = r.URL.Query().Get("script")
+	}
+
+	if body.Script == "" {
+		writeJSON(w, map[string]interface{}{
+			"result": map[string]interface{}{},
+		})
+		return
+	}
+
+	result, err := s.printerClient.ExecuteGCode(body.Script)
+	if err != nil {
+		log.Printf("GCode error: %v", err)
+	}
+
+	// Broadcast gcode response to WS clients.
+	if result != "" {
+		s.wsHub.BroadcastNotification("notify_gcode_response", []interface{}{result})
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"result": map[string]interface{}{},
+	})
+}
+
+func (s *Server) handlePrintStart(w http.ResponseWriter, r *http.Request) {
+	filename := r.URL.Query().Get("filename")
+	if filename == "" {
+		var body struct {
+			Filename string `json:"filename"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		filename = body.Filename
+	}
+
+	if filename != "" {
+		data, err := s.fileManager.ReadFile("gcodes", filename)
+		if err != nil {
+			log.Printf("Error reading file for print: %v", err)
+		} else if err := s.printerClient.Upload(filename, data); err != nil {
+			log.Printf("Error uploading to printer: %v", err)
+		}
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"result": map[string]interface{}{},
+	})
+}
+
+func (s *Server) handlePrintPause(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.printerClient.ExecuteGCode("M25"); err != nil {
+		log.Printf("Pause error: %v", err)
+	}
+	writeJSON(w, map[string]interface{}{
+		"result": map[string]interface{}{},
+	})
+}
+
+func (s *Server) handlePrintResume(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.printerClient.ExecuteGCode("M24"); err != nil {
+		log.Printf("Resume error: %v", err)
+	}
+	writeJSON(w, map[string]interface{}{
+		"result": map[string]interface{}{},
+	})
+}
+
+func (s *Server) handlePrintCancel(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.printerClient.ExecuteGCode("M26"); err != nil {
+		log.Printf("Cancel error: %v", err)
+	}
+	writeJSON(w, map[string]interface{}{
+		"result": map[string]interface{}{},
+	})
+}
+
+func (s *Server) handleEmergencyStop(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.printerClient.ExecuteGCode("M112"); err != nil {
+		log.Printf("Emergency stop error: %v", err)
+	}
+	writeJSON(w, map[string]interface{}{
+		"result": map[string]interface{}{},
+	})
+}
+
+func splitFields(s string) []string {
+	var fields []string
+	current := ""
+	for _, c := range s {
+		if c == ',' {
+			if current != "" {
+				fields = append(fields, current)
+			}
+			current = ""
+		} else {
+			current += string(c)
+		}
+	}
+	if current != "" {
+		fields = append(fields, current)
+	}
+	return fields
+}

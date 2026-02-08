@@ -1,0 +1,194 @@
+package moonraker
+
+import (
+	"encoding/json"
+	"io"
+	"log"
+	"net/http"
+	"strings"
+)
+
+// registerFileHandlers sets up /server/files/* routes.
+func (s *Server) registerFileHandlers() {
+	s.mux.HandleFunc("GET /server/files/list", s.handleFileList)
+	s.mux.HandleFunc("GET /server/files/metadata", s.handleFileMetadata)
+	s.mux.HandleFunc("POST /server/files/upload", s.handleFileUpload)
+	s.mux.HandleFunc("DELETE /server/files/{root}/{path...}", s.handleFileDelete)
+	s.mux.HandleFunc("GET /server/files/{root}/{path...}", s.handleFileDownload)
+	s.mux.HandleFunc("GET /server/files/roots", s.handleFileRoots)
+}
+
+func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
+	root := r.URL.Query().Get("root")
+	if root == "" {
+		root = "gcodes"
+	}
+
+	files := s.fileManager.ListFiles(root)
+
+	writeJSON(w, map[string]interface{}{
+		"result": files,
+	})
+}
+
+func (s *Server) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
+	filename := r.URL.Query().Get("filename")
+	if filename == "" {
+		writeJSON(w, map[string]interface{}{
+			"result": map[string]interface{}{},
+		})
+		return
+	}
+
+	meta, err := s.fileManager.GetMetadata("gcodes", filename)
+	if err != nil {
+		writeJSON(w, map[string]interface{}{
+			"error": map[string]interface{}{
+				"code":    404,
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"result": meta,
+	})
+}
+
+func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(512 << 20); err != nil { // 512MB max
+		http.Error(w, "failed to parse form", http.StatusBadRequest)
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "missing file field", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	root := r.FormValue("root")
+	if root == "" {
+		root = "gcodes"
+	}
+
+	// Determine filename - use path if provided, otherwise header filename.
+	filename := r.FormValue("path")
+	if filename == "" {
+		filename = header.Filename
+	}
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, "failed to read file", http.StatusInternalServerError)
+		return
+	}
+
+	if err := s.fileManager.SaveFile(root, filename, data); err != nil {
+		http.Error(w, "failed to save file: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("File uploaded: %s/%s (%d bytes)", root, filename, len(data))
+
+	// Notify WebSocket clients.
+	s.wsHub.BroadcastNotification("notify_filelist_changed", []interface{}{
+		map[string]interface{}{
+			"action": "create_file",
+			"item": map[string]interface{}{
+				"root":     root,
+				"path":     filename,
+				"modified": 0,
+				"size":     len(data),
+			},
+		},
+	})
+
+	writeJSON(w, map[string]interface{}{
+		"result": map[string]interface{}{
+			"item": map[string]interface{}{
+				"path":     filename,
+				"root":     root,
+				"modified": 0,
+				"size":     len(data),
+			},
+			"action": "create_file",
+		},
+	})
+}
+
+func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request) {
+	root := r.PathValue("root")
+	path := r.PathValue("path")
+
+	if err := s.fileManager.DeleteFile(root, path); err != nil {
+		writeJSON(w, map[string]interface{}{
+			"error": map[string]interface{}{
+				"code":    404,
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	// Notify WebSocket clients.
+	s.wsHub.BroadcastNotification("notify_filelist_changed", []interface{}{
+		map[string]interface{}{
+			"action": "delete_file",
+			"item": map[string]interface{}{
+				"root": root,
+				"path": path,
+			},
+		},
+	})
+
+	writeJSON(w, map[string]interface{}{
+		"result": map[string]interface{}{
+			"item": map[string]interface{}{
+				"path": path,
+				"root": root,
+			},
+			"action": "delete_file",
+		},
+	})
+}
+
+func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
+	root := r.PathValue("root")
+	path := r.PathValue("path")
+
+	data, err := s.fileManager.ReadFile(root, path)
+	if err != nil {
+		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+
+	// Set content type based on extension.
+	if strings.HasSuffix(path, ".gcode") || strings.HasSuffix(path, ".g") {
+		w.Header().Set("Content-Type", "text/plain")
+	} else if strings.HasSuffix(path, ".json") {
+		w.Header().Set("Content-Type", "application/json")
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+
+	w.Header().Set("Content-Disposition", "attachment; filename="+path)
+	w.Write(data)
+}
+
+func (s *Server) handleFileRoots(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]interface{}{
+		"result": []map[string]interface{}{
+			{
+				"name":        "gcodes",
+				"path":        s.fileManager.GetRootPath("gcodes"),
+				"permissions": "rw",
+			},
+		},
+	})
+}
+
+// Ensure json import is used (needed for handleFileUpload body parsing if extended).
+var _ = json.Marshal

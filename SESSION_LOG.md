@@ -157,9 +157,37 @@ Final image stack on the Pi:
 - ARM cross-compilation confirmed: `file` shows `ELF 32-bit LSB executable, ARM, EABI5, statically linked, stripped`
 - All scripts have executable permissions
 
+### Jenkins Agent Docker Image
+- Created `image/Dockerfile.jenkins-agent` based on `jenkins/inbound-agent:latest`
+- Installs all build dependencies: qemu-user-static, parted, e2fsprogs, xz-utils, systemd-container, wget, unzip, sudo
+- Installs Go 1.22.5 and GitHub CLI 2.63.2 (both versions parameterized via `ARG`)
+- Grants jenkins user passwordless sudo for mount/chroot operations
+- Build with: `docker build --network=host -t snapmaker-jenkins-agent -f image/Dockerfile.jenkins-agent .`
+- `--network=host` required during build to avoid DNS resolution failures in Docker
+
+### Docker Compose Integration
+The agent can be added to an existing Jenkins docker-compose setup:
+- Service `jenkins-agent` builds from `image/Dockerfile.jenkins-agent`
+- Requires `privileged: true` for losetup/mount/chroot
+- Connects to controller via internal hostname `http://jenkins:8080`
+- Agent secret managed via `.env` file (`JENKINS_AGENT_SECRET`)
+- `depends_on: jenkins` ensures controller starts first
+
+### Jenkins Pipeline Setup
+- Create a **Pipeline** job in Jenkins UI
+- Set **Definition** to "Pipeline script from SCM" pointing to the repo
+- Script path: `Jenkinsfile` (repo root)
+- Required credential: `github-token` (Secret text, GitHub PAT with `repo` scope)
+- Required Jenkins plugins: Pipeline, Credentials Binding, Git, Workspace Cleanup
+
+### README Update
+- Added "Raspberry Pi Image Build" section with agent build instructions, local build steps, and image architecture diagram
+
 ### Git
-- Committed as `1f51953` on `main`: "Add Jenkins CI pipeline to build Raspberry Pi 3 SD card image"
-- Pushed to `origin/main`
+- `1f51953` - "Add Jenkins CI pipeline to build Raspberry Pi 3 SD card image"
+- `3a20eeb` - "Add Dockerfile for Jenkins agent with RPi image build dependencies"
+- `aef4a62` - "Add RPi image build instructions to README"
+- All pushed to `origin/main`
 
 ---
 

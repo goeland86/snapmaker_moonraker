@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     unzip \
     sudo \
+    file \
     && rm -rf /var/lib/apt/lists/*
 
 # Go
@@ -25,6 +26,8 @@ ARG GH_VERSION=2.63.2
 RUN wget -q https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.deb \
     && dpkg -i gh_${GH_VERSION}_linux_amd64.deb \
     && rm gh_${GH_VERSION}_linux_amd64.deb
+
+RUN mkdir /var/jenkins && chown -R jenkins:jenkins /var/jenkins
 
 # Allow jenkins user to run sudo (needed for mount/chroot in build-image.sh)
 RUN echo "jenkins ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/jenkins

@@ -216,3 +216,141 @@ The agent can be added to an existing Jenkins docker-compose setup:
 - Token management is manual (must be confirmed at printer HMI)
 - Print pause/resume/cancel gcode commands (M25/M24/M26) may need adjustment for Snapmaker firmware
 - No reconnection logic yet - if SACP connection drops, server continues but printer commands fail
+
+---
+
+## Session 3 - 2026-02-09: Obico Integration Support
+
+### Objective
+Add the Moonraker APIs required for Obico (moonraker-obico) integration, enabling AI-powered print failure detection.
+
+### Research: Obico Requirements
+Analyzed the [moonraker-obico](https://github.com/TheSpaghettiDetective/moonraker-obico) source code to identify required APIs:
+
+**Critical missing features:**
+1. `server/database/item` - Obico stores `printer_id` for persistent linking
+2. `server/history/list` + `notify_history_changed` - Print job tracking
+3. Additional printer objects: `fan`, `heaters`, `display_status`
+
+### What Was Done
+
+#### Files Created (4 files, ~1,000 lines)
+
+**`database/database.go`** - JSON-file backed key-value store:
+- Organized by namespace (each namespace = separate JSON file)
+- Supports dot notation for nested keys (e.g., `printer.id`)
+- Thread-safe with `sync.RWMutex`
+- Persists to `.moonraker_data/database/`
+- Methods: `GetItem()`, `SetItem()`, `DeleteItem()`, `GetNamespace()`, `ListNamespaces()`
+
+**`history/history.go`** - Print job history tracking:
+- `Job` struct with: job_id, filename, status, start/end times, duration, filament used, metadata
+- Job statuses: `in_progress`, `completed`, `cancelled`, `error`, `klippy_shutdown`
+- `Manager` with: `StartJob()`, `FinishJob()`, `ListJobs()`, `GetJob()`, `DeleteJob()`
+- `Totals` for cumulative statistics
+- Callback support for `notify_history_changed` broadcasts
+- Persists to `.moonraker_data/history/history.json`
+
+**`moonraker/handler_database.go`** - Database API handlers:
+- HTTP: `GET/POST/DELETE /server/database/item`, `GET /server/database/list`
+- WebSocket JSON-RPC: `server.database.list`, `server.database.get_item`, `server.database.post_item`, `server.database.delete_item`
+
+**`moonraker/handler_history.go`** - History API handlers:
+- HTTP: `GET /server/history/list`, `GET /server/history/job`, `DELETE /server/history/job`, `GET /server/history/totals`, `POST /server/history/reset_totals`
+- WebSocket JSON-RPC: `server.history.list`, `server.history.get_job`, `server.history.delete_job`, `server.history.totals`, `server.history.reset_totals`
+
+#### Files Modified
+
+**`moonraker/server.go`**:
+- Added `database` and `history` fields to `Server` struct
+- Updated `NewServer()` to accept database and history managers
+- Added `History()` accessor method
+- Registered database and history route handlers
+
+**`moonraker/websocket.go`**:
+- Added all database JSON-RPC methods to `handleRPC()` switch
+- Added all history JSON-RPC methods
+- Added `BroadcastHistoryChanged()` helper
+- Added `BroadcastGCodeResponse()` helper
+
+**`moonraker/objects.go`**:
+- Added `fan` object (speed 0.0-1.0)
+- Added `heaters` object (available_heaters, available_sensors lists)
+- Added `display_status` object (progress, message)
+- Updated `AvailableObjects()` to include new objects
+
+**`moonraker/handler_server.go`**:
+- Added "database" to loaded components list
+
+**`printer/state.go`**:
+- Added `FanSpeed` field to `StateData`
+- Parse fan speed from Snapmaker status (converts 0-100% to 0.0-1.0)
+
+**`main.go`**:
+- Initialize database manager with data directory
+- Initialize history manager
+- Pass both to `moonraker.NewServer()`
+
+### API Summary
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/server/database/list` | GET | List namespaces |
+| `/server/database/item` | GET/POST/DELETE | Key-value CRUD |
+| `/server/history/list` | GET | List print jobs (paginated) |
+| `/server/history/job` | GET/DELETE | Get/delete specific job |
+| `/server/history/totals` | GET | Cumulative statistics |
+| `/server/history/reset_totals` | POST | Clear all history |
+
+### Data Storage
+
+```
+.moonraker_data/
+├── database/
+│   ├── obico.json      # Obico stores printer_id here
+│   └── mainsail.json   # Mainsail settings (if used)
+└── history/
+    └── history.json    # Print job records
+```
+
+### Obico Compatibility Status
+
+| Feature | Status |
+|---------|--------|
+| `server/database/item` | ✅ Implemented |
+| `server/history/list` | ✅ Implemented |
+| `notify_history_changed` | ✅ Implemented |
+| `notify_gcode_response` | ✅ Already existed |
+| `fan` object | ✅ Implemented |
+| `heaters` object | ✅ Implemented |
+| `display_status` object | ✅ Implemented |
+| Webcam config (`server/webcams`) | ❌ Not needed (manual config in Obico) |
+
+### Other Changes
+
+**`Jenkinsfile`**:
+- Improved GitHub release artifact upload
+- Separated release creation from artifact upload
+- Added `--clobber` flag to allow re-uploading on pipeline reruns
+- Handles case where release already exists
+
+### Git
+- `c8578c3` - "Improve GitHub release artifact upload in Jenkinsfile"
+- `a6bbf53` - "Add database and history APIs for Obico integration"
+- Both pushed to `origin/main`
+
+---
+
+## Updated Next Steps
+
+### Obico Testing
+- Install moonraker-obico on a test system
+- Verify database persistence works for printer linking
+- Test history tracking during actual prints
+- Confirm WebSocket notifications reach Obico
+
+### Remaining from Previous Sessions
+- Real printer testing (J1S)
+- Reconnection logic
+- Token refresh/persistence
+- Pause/resume/cancel command verification

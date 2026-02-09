@@ -1,11 +1,8 @@
 pipeline {
-    agent { label 'linux' }
-
+    agent { label 'snapmaker-builder' }
     environment {
-        GITHUB_TOKEN = credentials('github-token')
-        GOFLAGS      = '-trimpath'
+        GOFLAGS = '-trimpath'
     }
-
     stages {
         stage('Build Go Binary') {
             steps {
@@ -16,15 +13,16 @@ pipeline {
                 '''
             }
         }
-
         stage('Build RPi Image') {
             steps {
                 sh 'sudo image/build-image.sh snapmaker_moonraker-armv7'
             }
         }
-
         stage('Publish to GitHub Release') {
             when { buildingTag() }
+            environment {
+                GITHUB_TOKEN = credentials('github-token')
+            }
             steps {
                 sh '''
                     gh release create "${TAG_NAME}" \
@@ -36,7 +34,6 @@ pipeline {
             }
         }
     }
-
     post {
         always {
             archiveArtifacts artifacts: 'snapmaker-moonraker-rpi3-*.img.xz', allowEmptyArchive: true

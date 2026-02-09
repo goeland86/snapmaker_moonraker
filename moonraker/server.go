@@ -6,7 +6,9 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/john/snapmaker_moonraker/database"
 	"github.com/john/snapmaker_moonraker/files"
+	"github.com/john/snapmaker_moonraker/history"
 	"github.com/john/snapmaker_moonraker/printer"
 )
 
@@ -37,17 +39,21 @@ type Server struct {
 	printerClient *printer.Client
 	state         *printer.State
 	fileManager   *files.Manager
+	database      *database.Database
+	history       *history.Manager
 	wsHub         *WSHub
 }
 
 // NewServer creates a new Moonraker server.
-func NewServer(cfg Config, pc *printer.Client, st *printer.State, fm *files.Manager) *Server {
+func NewServer(cfg Config, pc *printer.Client, st *printer.State, fm *files.Manager, db *database.Database, hist *history.Manager) *Server {
 	s := &Server{
 		config:        cfg,
 		mux:           http.NewServeMux(),
 		printerClient: pc,
 		state:         st,
 		fileManager:   fm,
+		database:      db,
+		history:       hist,
 	}
 
 	s.wsHub = NewWSHub(s)
@@ -60,6 +66,11 @@ func NewServer(cfg Config, pc *printer.Client, st *printer.State, fm *files.Mana
 	return s
 }
 
+// History returns the history manager for external access.
+func (s *Server) History() *history.Manager {
+	return s.history
+}
+
 // WSHub returns the WebSocket hub for external access (e.g., status broadcasts).
 func (s *Server) Hub() *WSHub {
 	return s.wsHub
@@ -69,6 +80,8 @@ func (s *Server) registerRoutes() {
 	s.registerServerHandlers()
 	s.registerPrinterHandlers()
 	s.registerFileHandlers()
+	s.registerDatabaseHandlers()
+	s.registerHistoryHandlers()
 
 	// WebSocket endpoint.
 	s.mux.HandleFunc("GET /websocket", s.wsHub.HandleWebSocket)

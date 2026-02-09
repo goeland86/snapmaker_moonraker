@@ -20,6 +20,9 @@ func (po *PrinterObjects) BuildAll(state printer.StateData) map[string]interface
 		"print_stats":    po.PrintStats(state),
 		"virtual_sdcard": po.VirtualSDCard(state),
 		"webhooks":       po.Webhooks(state),
+		"fan":            po.Fan(state),
+		"heaters":        po.Heaters(state),
+		"display_status": po.DisplayStatus(state),
 	}
 }
 
@@ -75,6 +78,9 @@ func (po *PrinterObjects) AvailableObjects() []string {
 		"print_stats",
 		"virtual_sdcard",
 		"webhooks",
+		"fan",
+		"heaters",
+		"display_status",
 	}
 }
 
@@ -191,5 +197,32 @@ func (po *PrinterObjects) Webhooks(state printer.StateData) map[string]interface
 	return map[string]interface{}{
 		"state":         s,
 		"state_message": "",
+	}
+}
+
+func (po *PrinterObjects) Fan(state printer.StateData) map[string]interface{} {
+	return map[string]interface{}{
+		"speed": state.FanSpeed,
+		"rpm":   nil,
+	}
+}
+
+func (po *PrinterObjects) Heaters(state printer.StateData) map[string]interface{} {
+	// Return list of available heaters and sensors
+	return map[string]interface{}{
+		"available_heaters": []string{"heater_bed", "extruder", "extruder1"},
+		"available_sensors": []string{"heater_bed", "extruder", "extruder1"},
+	}
+}
+
+func (po *PrinterObjects) DisplayStatus(state printer.StateData) map[string]interface{} {
+	progress := state.PrintProgress
+	message := ""
+	if state.PrinterState == "printing" && state.PrintFileName != "" {
+		message = "Printing: " + state.PrintFileName
+	}
+	return map[string]interface{}{
+		"progress": progress,
+		"message":  message,
 	}
 }

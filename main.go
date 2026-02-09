@@ -7,10 +7,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/john/snapmaker_moonraker/database"
 	"github.com/john/snapmaker_moonraker/files"
+	"github.com/john/snapmaker_moonraker/history"
 	"github.com/john/snapmaker_moonraker/moonraker"
 	"github.com/john/snapmaker_moonraker/printer"
 )
@@ -43,6 +46,17 @@ func main() {
 	}
 	log.Printf("GCode directory: %s", cfg.Files.GCodeDir)
 
+	// Initialize database (for Obico and other integrations).
+	dataDir := filepath.Join(filepath.Dir(cfg.Files.GCodeDir), ".moonraker_data")
+	db, err := database.New(filepath.Join(dataDir, "database"))
+	if err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	log.Printf("Database directory: %s", filepath.Join(dataDir, "database"))
+
+	// Initialize history manager (will be connected to server hub after server creation).
+	var historyMgr *history.Manager
+
 	// Initialize printer client.
 	pc := printer.NewClient(cfg.Printer.IP, cfg.Printer.Token, cfg.Printer.Model)
 
@@ -61,8 +75,15 @@ func main() {
 	moonCfg.Printer.Model = cfg.Printer.Model
 	moonCfg.Files.GCodeDir = cfg.Files.GCodeDir
 
+	// Initialize history manager with a placeholder callback (will be set after server creation).
+	historyMgr, err = history.NewManager(filepath.Join(dataDir, "history"), nil)
+	if err != nil {
+		log.Fatalf("Failed to initialize history manager: %v", err)
+	}
+	log.Printf("History directory: %s", filepath.Join(dataDir, "history"))
+
 	// Create the Moonraker server.
-	server := moonraker.NewServer(moonCfg, pc, state, fm)
+	server := moonraker.NewServer(moonCfg, pc, state, fm, db, historyMgr)
 
 	// Connect to printer (non-fatal if it fails - we'll retry).
 	if cfg.Printer.IP != "" {

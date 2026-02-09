@@ -45,6 +45,7 @@ func (s *Server) loadedComponents() []string {
 		"klippy_apis",
 		"machine",
 		"data_store",
+		"database",
 		"history",
 		"octoprint_compat",
 	}

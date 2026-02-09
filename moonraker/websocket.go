@@ -126,6 +126,21 @@ func (h *WSHub) BroadcastNotification(method string, params interface{}) {
 	}
 }
 
+// BroadcastHistoryChanged sends notify_history_changed to all clients.
+func (h *WSHub) BroadcastHistoryChanged(action string, job interface{}) {
+	h.BroadcastNotification("notify_history_changed", []interface{}{
+		map[string]interface{}{
+			"action": action,
+			"job":    job,
+		},
+	})
+}
+
+// BroadcastGCodeResponse sends notify_gcode_response to all clients.
+func (h *WSHub) BroadcastGCodeResponse(response string) {
+	h.BroadcastNotification("notify_gcode_response", []interface{}{response})
+}
+
 // HandleWebSocket upgrades the HTTP connection to WebSocket and processes JSON-RPC.
 func (h *WSHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -221,6 +236,35 @@ func (h *WSHub) handleRPC(client *WSClient, req *jsonRPCRequest) {
 
 	case "server.files.metadata":
 		resp.Result = h.handleFileMetadata(req)
+
+	// Database methods
+	case "server.database.list":
+		resp.Result = h.handleDatabaseList()
+
+	case "server.database.get_item":
+		resp.Result = h.handleDatabaseGetItem(req.Params)
+
+	case "server.database.post_item":
+		resp.Result = h.handleDatabasePostItem(req.Params)
+
+	case "server.database.delete_item":
+		resp.Result = h.handleDatabaseDeleteItem(req.Params)
+
+	// History methods
+	case "server.history.list":
+		resp.Result = h.handleHistoryList(req.Params)
+
+	case "server.history.get_job":
+		resp.Result = h.handleHistoryGetJob(req.Params)
+
+	case "server.history.delete_job":
+		resp.Result = h.handleHistoryDeleteJob(req.Params)
+
+	case "server.history.totals":
+		resp.Result = h.handleHistoryTotals()
+
+	case "server.history.reset_totals":
+		resp.Result = h.handleHistoryResetTotals()
 
 	default:
 		resp.Error = &rpcError{

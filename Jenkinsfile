@@ -19,12 +19,20 @@ pipeline {
             }
         }
         stage('Publish to GitHub Release') {
-            when { buildingTag() }
+            when {
+                expression {
+                    return sh(script: 'git describe --exact-match --tags HEAD 2>/dev/null', returnStatus: true) == 0
+                }
+            }
             environment {
                 GITHUB_TOKEN = credentials('github-token')
             }
             steps {
                 sh '''
+                    # Get the tag name for this commit
+                    TAG_NAME=$(git describe --exact-match --tags HEAD)
+                    echo "Detected tag: ${TAG_NAME}"
+
                     # Create release if it doesn't exist
                     gh release create "${TAG_NAME}" \
                         --repo goeland86/snapmaker_moonraker \

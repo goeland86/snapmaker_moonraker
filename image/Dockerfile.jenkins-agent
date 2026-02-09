@@ -3,12 +3,10 @@ FROM jenkins/inbound-agent:latest
 USER root
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    udev \
+    util-linux \
     parted \
     dosfstools \
     e2fsprogs \
-    losetup \
-    mount \
     qemu-user-static \
     binfmt-support \
     kpartx \
@@ -17,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     file \
     sudo \
+    coreutils \
     && rm -rf /var/lib/apt/lists/*
 
 # Go
@@ -34,7 +33,6 @@ RUN wget -q https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_
 
 RUN mkdir /var/jenkins && chown -R jenkins:jenkins /var/jenkins
 
-# Allow jenkins user to run sudo (needed for mount/chroot in build-image.sh)
 RUN echo "jenkins ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/jenkins
 
 USER jenkins

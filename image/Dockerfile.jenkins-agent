@@ -3,15 +3,20 @@ FROM jenkins/inbound-agent:latest
 USER root
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    qemu-user-static \
+    udev \
     parted \
+    dosfstools \
     e2fsprogs \
+    losetup \
+    mount \
+    qemu-user-static \
+    binfmt-support \
+    kpartx \
     xz-utils \
-    systemd-container \
     wget \
-    unzip \
-    sudo \
+    curl \
     file \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Go

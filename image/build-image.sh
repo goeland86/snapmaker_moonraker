@@ -112,6 +112,10 @@ mount -o bind /dev/pts "${ROOT_MNT}/dev/pts"
 # Copy DNS config for network access inside chroot
 cp /etc/resolv.conf "${ROOT_MNT}/etc/resolv.conf"
 
+# --- Step 5b: Pre-copy service file so chroot can enable it ---
+cp -v "${SCRIPT_DIR}/rootfs/etc/systemd/system/snapmaker-moonraker.service" \
+    "${ROOT_MNT}/etc/systemd/system/snapmaker-moonraker.service"
+
 # --- Step 6: Run chroot install script ---
 echo "==> Running chroot install script..."
 cp "${SCRIPT_DIR}/chroot-install.sh" "${ROOT_MNT}/tmp/chroot-install.sh"

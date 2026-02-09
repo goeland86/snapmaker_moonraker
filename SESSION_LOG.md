@@ -354,3 +354,53 @@ Analyzed the [moonraker-obico](https://github.com/TheSpaghettiDetective/moonrake
 - Reconnection logic
 - Token refresh/persistence
 - Pause/resume/cancel command verification
+
+---
+
+## Session 4 - 2026-02-09: Jenkins Tag Detection Fix
+
+### Objective
+Fix Jenkins pipeline not creating GitHub releases even when a tag exists on the commit.
+
+### Problem
+The `Publish to GitHub Release` stage was being skipped despite the tag `v0.0.2` existing on the commit. The pipeline used `when { buildingTag() }` which only returns true when Jenkins specifically triggers a build *for* a tag, not when a branch commit happens to have a tag pointing to it.
+
+From the Jenkins log:
+```
+Checking out Revision f51534cc11e9c01c6c910cd967b3933a9dbad140 (origin/main, refs/tags/v0.0.2)
+```
+
+Jenkins was treating this as a branch build (`origin/main`), not a tag build.
+
+### Solution
+Replaced `buildingTag()` with a `git describe` check that detects tags regardless of how the build was triggered:
+
+```groovy
+when {
+    expression {
+        return sh(script: 'git describe --exact-match --tags HEAD 2>/dev/null', returnStatus: true) == 0
+    }
+}
+```
+
+Also added tag name detection inside the script block since `TAG_NAME` is no longer provided by Jenkins:
+```bash
+TAG_NAME=$(git describe --exact-match --tags HEAD)
+```
+
+### Files Modified
+
+**`Jenkinsfile`**:
+- Changed `when { buildingTag() }` to expression using `git describe --exact-match --tags HEAD`
+- Added `TAG_NAME` variable extraction inside the shell script
+- Added echo statement to log detected tag name
+
+### Verification
+- Recreated tag `v0.0.2` on the new commit
+- Jenkins build successfully detected the tag
+- GitHub release and artifact created successfully
+
+### Git
+- `8f40edc` - "Fix tag detection in Jenkinsfile to work with any build trigger"
+- Pushed to `origin/main`
+- Tag `v0.0.2` recreated on commit `8f40edc`

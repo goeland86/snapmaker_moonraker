@@ -31,6 +31,9 @@ sed -i 's/127\.0\.1\.1.*/127.0.1.1\tsnapmaker/' /etc/hosts
 echo "==> [chroot] Enabling SSH..."
 systemctl enable ssh
 
+echo "==> [chroot] Setting default password for pi user..."
+echo 'pi:temppwd' | chpasswd
+
 echo "==> [chroot] Cleaning up..."
 apt-get clean
 rm -rf /var/lib/apt/lists/*

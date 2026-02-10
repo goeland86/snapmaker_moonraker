@@ -102,7 +102,7 @@ This produces a `snapmaker-moonraker-rpi3-YYYYMMDD.img.xz` file ready to flash t
 - Raspberry Pi OS Lite (Bookworm, 32-bit)
 - nginx serving Mainsail on port 80
 - snapmaker_moonraker as a systemd service on port 7125
-- SSH enabled, hostname `snapmaker`
+- SSH enabled, hostname `snapmaker`, default user `pi` / password `temppwd`
 
 ## SACP Protocol
 

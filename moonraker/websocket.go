@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -185,6 +186,8 @@ func (h *WSHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WSHub) handleRPC(client *WSClient, req *jsonRPCRequest) {
+	log.Printf("WebSocket RPC: method=%s id=%v", req.Method, req.ID)
+
 	var resp jsonRPCResponse
 	resp.JSONRPC = "2.0"
 	resp.ID = req.ID
@@ -234,8 +237,40 @@ func (h *WSHub) handleRPC(client *WSClient, req *jsonRPCRequest) {
 	case "server.files.list":
 		resp.Result = h.server.fileManager.ListFiles("gcodes")
 
+	case "server.config":
+		resp.Result = h.server.serverConfig()
+
 	case "server.files.metadata":
 		resp.Result = h.handleFileMetadata(req)
+
+	case "server.files.get_directory":
+		resp.Result = h.handleFilesGetDirectory(req.Params)
+
+	case "server.files.roots":
+		resp.Result = h.handleFilesRoots()
+
+	case "machine.system_info":
+		resp.Result = h.server.machineSystemInfo()
+
+	case "machine.proc_stats":
+		resp.Result = h.server.machineProcStats()
+
+	case "server.temperature_store":
+		resp.Result = h.server.temperatureStore()
+
+	case "server.gcode_store":
+		resp.Result = h.server.gcodeStore()
+
+	case "server.announcements.list":
+		resp.Result = h.handleAnnouncementsList()
+
+	case "server.announcements.update":
+		resp.Result = h.handleAnnouncementsUpdate()
+
+	case "server.webcams.list":
+		resp.Result = map[string]interface{}{
+			"webcams": []interface{}{},
+		}
 
 	// Database methods
 	case "server.database.list":
@@ -267,14 +302,19 @@ func (h *WSHub) handleRPC(client *WSClient, req *jsonRPCRequest) {
 		resp.Result = h.handleHistoryResetTotals()
 
 	default:
+		log.Printf("WebSocket RPC: UNKNOWN method=%s", req.Method)
 		resp.Error = &rpcError{
 			Code:    -32601,
 			Message: "Method not found: " + req.Method,
 		}
 	}
 
+	if resp.Error != nil {
+		log.Printf("WebSocket RPC error: method=%s code=%d msg=%s", req.Method, resp.Error.Code, resp.Error.Message)
+	}
+
 	if err := client.send(resp); err != nil {
-		log.Printf("WebSocket response error: %v", err)
+		log.Printf("WebSocket response send error: %v", err)
 	}
 }
 
@@ -312,6 +352,24 @@ func (h *WSHub) handleObjectsSubscribe(client *WSClient, req *jsonRPCRequest) in
 func (h *WSHub) handleGCodeScript(req *jsonRPCRequest) interface{} {
 	script := extractStringParam(req.Params, "script")
 	if script == "" {
+		return map[string]interface{}{}
+	}
+
+	// Intercept FIRMWARE_RESTART and RESTART to trigger printer reconnection.
+	upperScript := strings.ToUpper(strings.TrimSpace(script))
+	if upperScript == "FIRMWARE_RESTART" || upperScript == "RESTART" {
+		go func() {
+			if err := h.server.printerClient.Reconnect(); err != nil {
+				log.Printf("Reconnect failed: %v", err)
+				h.BroadcastNotification("notify_gcode_response", []interface{}{
+					"Error: reconnect failed - " + err.Error(),
+				})
+			} else {
+				h.BroadcastNotification("notify_gcode_response", []interface{}{
+					"Reconnected to printer successfully",
+				})
+			}
+		}()
 		return map[string]interface{}{}
 	}
 
@@ -383,6 +441,38 @@ func (h *WSHub) handleFileMetadata(req *jsonRPCRequest) interface{} {
 		return map[string]interface{}{}
 	}
 	return meta
+}
+
+func (h *WSHub) handleFilesGetDirectory(params interface{}) interface{} {
+	path := extractStringParam(params, "path")
+	root := extractStringParam(params, "root")
+	if root == "" {
+		root = "gcodes"
+	}
+	return h.server.fileManager.GetDirectory(root, path)
+}
+
+func (h *WSHub) handleFilesRoots() interface{} {
+	return []map[string]interface{}{
+		{
+			"name":        "gcodes",
+			"path":        h.server.fileManager.GetRootPath("gcodes"),
+			"permissions": "rw",
+		},
+	}
+}
+
+func (h *WSHub) handleAnnouncementsList() interface{} {
+	return map[string]interface{}{
+		"entries": []interface{}{},
+		"feeds":   []interface{}{},
+	}
+}
+
+func (h *WSHub) handleAnnouncementsUpdate() interface{} {
+	return map[string]interface{}{
+		"modified": false,
+	}
 }
 
 // extractObjectsParam pulls the "objects" map from params (handles both map and positional).

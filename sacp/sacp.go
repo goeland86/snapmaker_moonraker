@@ -11,8 +11,10 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"sync"
 	"time"
@@ -208,25 +210,28 @@ func Read(conn net.Conn, timeout time.Duration) (*Packet, error) {
 
 	conn.SetReadDeadline(time.Now().Add(timeout))
 
-	n, err := conn.Read(buf[:4])
+	_, err := io.ReadFull(conn, buf[:4])
 	if err != nil {
 		return nil, err
 	}
-	if n != 4 {
-		return nil, ErrInvalidSize
+
+	if buf[0] != 0xAA || buf[1] != 0x55 {
+		return nil, ErrInvalidPacket
 	}
 
 	dataLen := binary.LittleEndian.Uint16(buf[2:4])
-	n, err = conn.Read(buf[4 : dataLen+7])
-	if err != nil {
-		return nil, err
-	}
-	if n != int(dataLen+3) {
+	totalLen := int(dataLen) + 7
+	if totalLen > len(buf) {
 		return nil, ErrInvalidSize
 	}
 
+	_, err = io.ReadFull(conn, buf[4:totalLen])
+	if err != nil {
+		return nil, err
+	}
+
 	var p Packet
-	err = p.Decode(buf[:dataLen+7])
+	err = p.Decode(buf[:totalLen])
 	return &p, err
 }
 
@@ -277,6 +282,201 @@ func Disconnect(conn net.Conn, timeout time.Duration) error {
 		Data:       []byte{},
 	}.Encode())
 	return err
+}
+
+// ExecuteGCode sends a G-code command via SACP (command set 0x01, command ID 0x02)
+// and returns the response string.
+func ExecuteGCode(conn net.Conn, gcode string, timeout time.Duration) (string, error) {
+	seq := nextSequence()
+
+	// Build the data payload: length-prefixed string.
+	data := bytes.Buffer{}
+	writeString(&data, gcode)
+
+	conn.SetWriteDeadline(time.Now().Add(timeout))
+	_, err := conn.Write(Packet{
+		ReceiverID: 1,
+		SenderID:   0,
+		Attribute:  0,
+		Sequence:   seq,
+		CommandSet: 0x01,
+		CommandID:  0x02,
+		Data:       data.Bytes(),
+	}.Encode())
+
+	if err != nil {
+		return "", err
+	}
+
+	for {
+		p, err := Read(conn, timeout)
+		if err != nil {
+			return "", err
+		}
+
+		if p.Sequence == seq && p.CommandSet == 0x01 && p.CommandID == 0x02 {
+			log.Printf("SACP GCode response: seq=%d dataLen=%d data=%x", p.Sequence, len(p.Data), p.Data)
+			// Response data: first byte is result (0=success), rest is response string.
+			if len(p.Data) < 1 {
+				return "", nil
+			}
+			if p.Data[0] != 0 {
+				return "", fmt.Errorf("gcode execution failed with result code %d", p.Data[0])
+			}
+			if len(p.Data) > 1 {
+				// Parse response string (length-prefixed or raw).
+				return string(p.Data[1:]), nil
+			}
+			return "", nil
+		}
+	}
+}
+
+// Subscribe sends a SACP subscription request.
+// The printer will then periodically send packets with the given commandSet/commandID.
+func Subscribe(conn net.Conn, commandSet uint8, commandID uint8, intervalMs uint16, timeout time.Duration) error {
+	seq := nextSequence()
+
+	data := bytes.Buffer{}
+	writeLE(&data, intervalMs)
+
+	conn.SetWriteDeadline(time.Now().Add(timeout))
+	_, err := conn.Write(Packet{
+		ReceiverID: 1,
+		SenderID:   0,
+		Attribute:  0,
+		Sequence:   seq,
+		CommandSet: commandSet,
+		CommandID:  commandID,
+		Data:       data.Bytes(),
+	}.Encode())
+
+	if err != nil {
+		return err
+	}
+
+	// Read the acknowledgment.
+	for {
+		p, err := Read(conn, timeout)
+		if err != nil {
+			return err
+		}
+		if p.Sequence == seq && p.CommandSet == commandSet && p.CommandID == commandID {
+			return nil
+		}
+	}
+}
+
+// ParseExtruderInfo parses nozzle query/subscription data (CommandSet 0x10, CommandID 0xa0).
+// Format: 3-byte header + 17-byte extruder records.
+//
+// Header (3 bytes):
+//
+//	byte[0]: context-dependent (key for push, result for ACK)
+//	byte[1]: context-dependent (head_status for push, key for ACK)
+//	byte[2]: extruder_count
+//
+// Per-extruder record (17 bytes):
+//
+//	index(1) + filament_status(1) + filament_enable(1) + is_available(1) + type(1)
+//	+ diameter(int32 LE, 4) + cur_temp(int32 LE, 4) + target_temp(int32 LE, 4)
+//
+// Temperatures are int32 LE in millidegrees (÷1000 for °C).
+func ParseExtruderInfo(data []byte) (extruders []ExtruderData) {
+	if len(data) < 3 {
+		return nil
+	}
+	headID := int(data[1]) // 0=T0 (left), 1=T1 (right) on J1S
+	count := int(data[2])
+	offset := 3
+	const recordSize = 17
+
+	for i := 0; i < count && offset+recordSize <= len(data); i++ {
+		e := ExtruderData{
+			Index:  int(data[offset]),
+			HeadID: headID,
+		}
+		raw := int32(binary.LittleEndian.Uint32(data[offset+9 : offset+13]))
+		e.CurrentTemp = float64(raw) / 1000.0
+		raw = int32(binary.LittleEndian.Uint32(data[offset+13 : offset+17]))
+		e.TargetTemp = float64(raw) / 1000.0
+		extruders = append(extruders, e)
+		offset += recordSize
+	}
+	return
+}
+
+// ParseBedInfo parses heated bed query/subscription data (CommandSet 0x14, CommandID 0xa0).
+// Format: 3-byte header + 7-byte zone records.
+//
+// Header (3 bytes):
+//
+//	byte[0]: context-dependent (key for push, result for ACK)
+//	byte[1]: key (e.g. 0x90 on J1S)
+//	byte[2]: zone_count
+//
+// Per-zone record (7 bytes):
+//
+//	zone_index(1) + cur_temp(int32 LE, 4) + target_temp(int16 LE, 2)
+//
+// cur_temp is int32 LE in millidegrees (÷1000 for °C).
+// target_temp is int16 LE (unit TBD - treated as whole degrees for now).
+func ParseBedInfo(data []byte) (zones []BedZoneData) {
+	if len(data) < 3 {
+		return nil
+	}
+	count := int(data[2])
+	offset := 3
+	const recordSize = 7
+
+	for i := 0; i < count && offset+recordSize <= len(data); i++ {
+		z := BedZoneData{
+			Index: int(data[offset]),
+		}
+		raw := int32(binary.LittleEndian.Uint32(data[offset+1 : offset+5]))
+		z.CurrentTemp = float64(raw) / 1000.0
+		rawTarget := int16(binary.LittleEndian.Uint16(data[offset+5 : offset+7]))
+		z.TargetTemp = float64(rawTarget)
+		zones = append(zones, z)
+		offset += recordSize
+	}
+	return
+}
+
+// ExtruderData holds parsed extruder temperature info.
+type ExtruderData struct {
+	Index       int
+	HeadID      int // from header byte[1]: 0=T0 (left), 1=T1 (right) on J1S
+	CurrentTemp float64
+	TargetTemp  float64
+}
+
+// BedZoneData holds parsed bed zone temperature info.
+type BedZoneData struct {
+	Index       int
+	CurrentTemp float64
+	TargetTemp  float64
+}
+
+func readFloat32LE(b []byte) float32 {
+	bits := binary.LittleEndian.Uint32(b)
+	return math.Float32frombits(bits)
+}
+
+// WritePacket writes a SACP command packet and returns the sequence number used.
+func WritePacket(conn net.Conn, commandSet, commandID byte, data []byte, timeout time.Duration) (uint16, error) {
+	seq := nextSequence()
+	conn.SetWriteDeadline(time.Now().Add(timeout))
+	_, err := conn.Write(Packet{
+		ReceiverID: 1,
+		SenderID:   0,
+		Attribute:  0,
+		Sequence:   seq,
+		CommandSet: commandSet,
+		CommandID:  commandID,
+		Data:       data,
+	}.Encode())
+	return seq, err
 }
 
 // SetToolTemperature sets the extruder temperature via SACP.

@@ -11,6 +11,7 @@ import (
 // registerFileHandlers sets up /server/files/* routes.
 func (s *Server) registerFileHandlers() {
 	s.mux.HandleFunc("GET /server/files/list", s.handleFileList)
+	s.mux.HandleFunc("GET /server/files/directory", s.handleFileDirectory)
 	s.mux.HandleFunc("GET /server/files/metadata", s.handleFileMetadata)
 	s.mux.HandleFunc("POST /server/files/upload", s.handleFileUpload)
 	s.mux.HandleFunc("DELETE /server/files/{root}/{path...}", s.handleFileDelete)
@@ -28,6 +29,24 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, map[string]interface{}{
 		"result": files,
+	})
+}
+
+func (s *Server) handleFileDirectory(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	root := "gcodes"
+	if path == "" {
+		path = "gcodes"
+	}
+	// If path starts with a known root, extract it
+	if strings.HasPrefix(path, "gcodes") {
+		root = "gcodes"
+		path = strings.TrimPrefix(path, "gcodes")
+		path = strings.TrimPrefix(path, "/")
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"result": s.fileManager.GetDirectory(root, path),
 	})
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 )
 
 // registerPrinterHandlers sets up /printer/* routes.
@@ -27,12 +28,10 @@ func (s *Server) handlePrinterInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) printerInfo() map[string]interface{} {
+	// Always report as ready so Mainsail loads the dashboard.
+	// Actual printer state is reflected via printer objects (webhooks, print_stats).
 	state := "ready"
 	msg := ""
-	if !s.printerClient.Connected() {
-		state = "error"
-		msg = "Printer not connected"
-	}
 
 	snap := s.state.Snapshot()
 	if snap.PrinterState == "printing" {
@@ -114,6 +113,20 @@ func (s *Server) handleGCodeScript(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if body.Script == "" {
+		writeJSON(w, map[string]interface{}{
+			"result": map[string]interface{}{},
+		})
+		return
+	}
+
+	// Intercept FIRMWARE_RESTART and RESTART to trigger printer reconnection.
+	upperScript := strings.ToUpper(strings.TrimSpace(body.Script))
+	if upperScript == "FIRMWARE_RESTART" || upperScript == "RESTART" {
+		go func() {
+			if err := s.printerClient.Reconnect(); err != nil {
+				log.Printf("Reconnect failed: %v", err)
+			}
+		}()
 		writeJSON(w, map[string]interface{}{
 			"result": map[string]interface{}{},
 		})

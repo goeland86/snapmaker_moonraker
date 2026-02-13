@@ -123,16 +123,36 @@ func (sp *StatePoller) run() {
 
 func (sp *StatePoller) poll() {
 	if !sp.client.Connected() {
-		sp.state.mu.Lock()
-		sp.state.data.Connected = false
-		sp.state.data.PrinterState = "error"
-		sp.state.mu.Unlock()
-
-		if sp.callback != nil {
-			sp.callback(sp.state)
+		// Try to reconnect automatically.
+		if sp.client.IP() != "" {
+			if sp.client.Ping() {
+				log.Printf("Printer reachable, attempting reconnect...")
+				if err := sp.client.Connect(); err != nil {
+					log.Printf("Reconnect failed: %v", err)
+				} else {
+					log.Printf("Reconnected to printer successfully")
+				}
+			}
 		}
-		return
+
+		// Still not connected after attempt - update state.
+		if !sp.client.Connected() {
+			sp.state.mu.Lock()
+			sp.state.data.Connected = false
+			sp.state.mu.Unlock()
+
+			if sp.callback != nil {
+				sp.callback(sp.state)
+			}
+			return
+		}
 	}
+
+	// Trigger temperature queries (data arrives asynchronously via the router).
+	sp.client.QueryTemperatures()
+
+	// Small delay to let query responses arrive.
+	time.Sleep(300 * time.Millisecond)
 
 	status, err := sp.client.GetStatus()
 	if err != nil {

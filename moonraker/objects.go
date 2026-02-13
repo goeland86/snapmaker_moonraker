@@ -190,12 +190,9 @@ func (po *PrinterObjects) VirtualSDCard(state printer.StateData) map[string]inte
 }
 
 func (po *PrinterObjects) Webhooks(state printer.StateData) map[string]interface{} {
-	s := "ready"
-	if !state.Connected {
-		s = "shutdown"
-	}
+	// Always report ready - the bridge is the "Klipper" from Mainsail's perspective.
 	return map[string]interface{}{
-		"state":         s,
+		"state":         "ready",
 		"state_message": "",
 	}
 }

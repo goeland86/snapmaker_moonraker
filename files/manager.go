@@ -58,6 +58,75 @@ func (m *Manager) ListFiles(root string) []map[string]interface{} {
 	return result
 }
 
+// GetDirectory returns directory listing in Moonraker's get_directory format.
+func (m *Manager) GetDirectory(root, path string) map[string]interface{} {
+	dir := m.GetRootPath(root)
+	if path != "" && path != root {
+		dir = filepath.Join(dir, filepath.FromSlash(path))
+	}
+
+	var files []map[string]interface{}
+	var dirs []map[string]interface{}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		files = []map[string]interface{}{}
+		dirs = []map[string]interface{}{}
+	} else {
+		for _, entry := range entries {
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			if entry.IsDir() {
+				dirs = append(dirs, map[string]interface{}{
+					"dirname":  entry.Name(),
+					"modified": float64(info.ModTime().Unix()),
+					"size":     info.Size(),
+					"permissions": "rw",
+				})
+			} else {
+				files = append(files, map[string]interface{}{
+					"path":        entry.Name(),
+					"modified":    float64(info.ModTime().Unix()),
+					"size":        info.Size(),
+					"permissions": "rw",
+				})
+			}
+		}
+	}
+
+	if files == nil {
+		files = []map[string]interface{}{}
+	}
+	if dirs == nil {
+		dirs = []map[string]interface{}{}
+	}
+
+	// Get disk usage
+	diskUsage := m.getDiskUsage(m.GetRootPath(root))
+
+	return map[string]interface{}{
+		"dirs":  dirs,
+		"files": files,
+		"disk_usage": diskUsage,
+		"root_info": map[string]interface{}{
+			"name":        root,
+			"permissions": "rw",
+		},
+	}
+}
+
+// getDiskUsage returns disk usage stats for the given path.
+func (m *Manager) getDiskUsage(path string) map[string]interface{} {
+	// Return reasonable defaults - actual disk usage requires platform-specific calls
+	return map[string]interface{}{
+		"total": 0,
+		"used":  0,
+		"free":  0,
+	}
+}
+
 // GetMetadata returns metadata for a specific file.
 func (m *Manager) GetMetadata(root, filename string) (map[string]interface{}, error) {
 	path := filepath.Join(m.GetRootPath(root), filepath.FromSlash(filename))

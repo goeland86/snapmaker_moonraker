@@ -404,3 +404,150 @@ TAG_NAME=$(git describe --exact-match --tags HEAD)
 - `8f40edc` - "Fix tag detection in Jenkinsfile to work with any build trigger"
 - Pushed to `origin/main`
 - Tag `v0.0.2` recreated on commit `8f40edc`
+
+---
+
+## Session 5 - 2026-02-12/13: SACP Temperature Parsing & Mainsail Dashboard Fixes
+
+### Objective
+Get Mainsail dashboard fully functional with real-time temperature data from the Snapmaker J1S printer over SACP, fix missing WebSocket/HTTP API methods that Mainsail requires, and resolve temperature parsing issues.
+
+### Background
+Previous sessions established the bridge architecture but never tested with a real printer. The J1S only supports SACP (no HTTP API on port 8080), and M105/M114 GCode commands return empty responses via SACP. This session focused on getting real temperature data flowing to the Mainsail UI using SACP binary protocol queries.
+
+### What Was Done
+
+#### Phase 1: Mainsail Dashboard Fixes
+
+Fixed multiple missing API endpoints and WebSocket methods that Mainsail requires on initial load:
+
+**`moonraker/handler_server.go`**:
+- Added `GET /machine/system_info` - Returns OS info, CPU, memory, Python version
+- Added `GET /machine/proc_stats` - Returns process statistics, CPU/memory usage
+- Added `GET /server/webcams/list` - Returns empty webcam list
+- Added `GET /server/temperature_store` - Returns temperature history (ring buffer of last 1200 readings for each sensor)
+- Added `GET /server/gcode_store` - Returns recent GCode command history
+- Implemented `TemperatureStore` with ring buffer for tracking temperature history over time
+
+**`moonraker/websocket.go`**:
+- Added WebSocket RPC handlers for: `server.connection.identify`, `machine.system_info`, `machine.proc_stats`, `server.webcams.list`, `server.temperature_store`, `server.gcode_store`, `server.files.get_directory`
+- Fixed `klippy_connected` to return `true` when printer is connected (was hardcoded to `false`, preventing Mainsail from showing the dashboard)
+
+**`moonraker/handler_printer.go`**:
+- Fixed `printer.objects.subscribe` to return current object state (was returning empty result)
+
+**`moonraker/handler_files.go`**:
+- Added `GET /server/files/get_directory` endpoint for file browser
+
+**`moonraker/objects.go`**:
+- Added `system_stats` object (sysload, cputime, memavail)
+
+**`files/manager.go`**:
+- Added `GetDirectory()` method returning Moonraker-format directory listing with files, dirs, disk usage
+
+#### Phase 2: SACP Binary Protocol Temperature Reading
+
+Discovered that the J1S doesn't support M105/M114 GCode via SACP (returns empty responses). Implemented direct SACP binary protocol queries for temperature data.
+
+**`sacp/sacp.go`**:
+- Fixed `readFloat32LE()` - Was using unsafe pointer cast, replaced with `math.Float32frombits()`
+- Fixed `Read()` - Replaced single `conn.Read()` with `io.ReadFull()` for robustness with TCP fragmentation
+- Added `WritePacket()` function - Writes SACP command packets with auto-incrementing sequence numbers
+- Added `ParseExtruderInfo()` - Parses extruder query response (CommandSet 0x10, CommandID 0xa0)
+- Added `ParseBedInfo()` - Parses bed query response (CommandSet 0x14, CommandID 0xa0)
+- Added `ExtruderData` and `BedZoneData` structs
+
+**`printer/router.go`** (NEW FILE):
+- `PacketRouter` - Background goroutine that reads all incoming SACP packets
+- Routes command responses to waiting callers via channels keyed by sequence number
+- Routes subscription/push data to a callback handler
+- Cooperative stop mechanism with atomic stopped flag
+- `WaitForResponse()` blocks until matching response arrives or times out
+
+**`printer/client.go`** (major rewrite):
+- Integrated `PacketRouter` for async packet handling
+- Added `writeMu` mutex to serialize writes to the connection
+- Added subscription data caching (`extruderData`, `bedData`) with `sync.RWMutex`
+- `Connect()` creates and starts PacketRouter, triggers initial temperature query
+- `QueryTemperatures()` sends one-shot queries to 0x10/0xa0 (extruder) and 0x14/0xa0 (bed)
+- `sendQuery()` writes packet, waits for ACK via router, passes ACK data to subscription handler
+- `handleSubscription()` parses and caches extruder/bed data, merges by HeadID
+- `handleDisconnect()` clears connection state on unexpected disconnect
+- `GetStatus()` returns cached temperature data
+- `Upload()` stops router, performs upload, restarts router and re-queries temperatures
+
+**`printer/state.go`**:
+- Modified `poll()` to call `QueryTemperatures()` each cycle with 300ms delay for responses
+- Auto-reconnect logic using `Ping()` + `Connect()` when connection is lost
+
+#### Phase 3: Temperature Parsing Reverse Engineering
+
+The J1S SACP temperature data format required significant reverse engineering:
+
+**Discovery process:**
+1. Initial attempt assumed float32 encoding (from SM2.0 docs) → temperatures showed 0.0°C
+2. Raw hex analysis of push packets revealed uint16 LE millidegrees at specific offsets → partial success (T0 worked)
+3. Research into SnapmakerController-IDEX firmware source code revealed the actual format
+4. Verified against raw data samples with exact byte-level analysis
+
+**J1S Extruder Response Format (0x10/0xa0):**
+- 3-byte header: byte[0]=context, byte[1]=head_id, byte[2]=extruder_count
+- 17-byte per-extruder record: index(1) + filament_status(1) + filament_enable(1) + is_available(1) + type(1) + diameter(int32 LE, 4) + cur_temp(int32 LE, 4) + target_temp(int32 LE, 4)
+- Temperatures are int32 LE in millidegrees (÷1000 for °C)
+- J1S sends **separate packets per nozzle**: HeadID=0 for T0 (left), HeadID=1 for T1 (right)
+- The record `index` field is always 0; the **header HeadID** distinguishes nozzles
+- Nozzle diameter confirmed: `90 01 00 00` = 400 → 0.4mm nozzle
+
+**J1S Bed Response Format (0x14/0xa0):**
+- 3-byte header: byte[0]=context, byte[1]=key (0x90), byte[2]=zone_count
+- 7-byte per-zone record: zone_index(1) + cur_temp(int32 LE, 4) + target_temp(int16 LE, 2)
+- cur_temp is int32 LE millidegrees; target_temp is int16 LE (units TBD)
+
+**Key J1S protocol behaviors:**
+- Temperature queries (0x10/0xa0, 0x14/0xa0) are **one-shot** (not periodic subscriptions)
+- Each query returns an ACK response (with result byte prefix) AND a push packet (without prefix)
+- The state poller re-queries every poll cycle to get fresh data
+
+#### Phase 4: Infrastructure Fixes
+
+**`image/chroot-install.sh`**:
+- Added removal of `/etc/ssh/sshd_config.d/rename_user.conf` to suppress the "Please note that SSH may not work until a valid user has been set up" banner on RPi images
+
+**`build-arm.ps1`** (NEW FILE):
+- PowerShell script for cross-compiling ARM binary on Windows (environment variable setting differs from bash)
+
+### Verified Results
+
+Moonraker API returns correct data for all three heaters:
+```json
+{
+  "extruder": {"temperature": 250.1, "target": 250.0},
+  "extruder1": {"temperature": 25.7, "target": 0.0},
+  "heater_bed": {"temperature": 22.7, "target": 0.0}
+}
+```
+
+### Issues Encountered & Resolved
+
+- **Cross-compilation on Windows**: `set GOOS=linux && go build` doesn't persist env vars across `&&` on Windows cmd. Solved with PowerShell build script.
+- **Binary name mismatch**: Compiled as `snapmaker-moonraker` (hyphen) but systemd service expects `snapmaker_moonraker` (underscore). Resolved by copying to correct filename during deployment.
+- **Temperature encoding discovery**: Went through three iterations (float32 → uint16 → int32) before finding correct format via firmware source analysis.
+- **Single extruder returned**: J1S reports one extruder per packet with identity in header byte[1], not in the record index. Solved by merging packets by HeadID.
+- **Exec format error on RPi**: Windows PowerShell `$env:GOOS` variable syntax required a dedicated `.ps1` script file.
+
+### Files Created
+- `printer/router.go` - PacketRouter (131 lines)
+- `printer/gcode_parse.go` - M105/M114 GCode parsers (93 lines, for fallback use)
+- `build-arm.ps1` - Windows ARM cross-compilation script (4 lines)
+
+### Files Modified
+- `sacp/sacp.go` - Added WritePacket, ParseExtruderInfo, ParseBedInfo, fixed Read/readFloat32LE
+- `printer/client.go` - Major rewrite for PacketRouter integration and SACP subscriptions
+- `printer/state.go` - Added periodic QueryTemperatures in poll loop
+- `moonraker/handler_server.go` - Added machine info, temperature store, webcams, gcode store endpoints
+- `moonraker/handler_printer.go` - Fixed printer.objects.subscribe
+- `moonraker/handler_files.go` - Added get_directory endpoint
+- `moonraker/websocket.go` - Added many missing RPC methods, fixed klippy_connected
+- `moonraker/objects.go` - Added system_stats object
+- `files/manager.go` - Added GetDirectory method
+- `image/chroot-install.sh` - Added SSH banner removal

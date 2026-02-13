@@ -112,9 +112,11 @@ mount -o bind /dev/pts "${ROOT_MNT}/dev/pts"
 # Copy DNS config for network access inside chroot
 cp /etc/resolv.conf "${ROOT_MNT}/etc/resolv.conf"
 
-# --- Step 5b: Pre-copy service file so chroot can enable it ---
+# --- Step 5b: Pre-copy service files so chroot can enable them ---
 cp -v "${SCRIPT_DIR}/rootfs/etc/systemd/system/snapmaker-moonraker.service" \
     "${ROOT_MNT}/etc/systemd/system/snapmaker-moonraker.service"
+cp -v "${SCRIPT_DIR}/rootfs/etc/systemd/system/crowsnest.service" \
+    "${ROOT_MNT}/etc/systemd/system/crowsnest.service"
 
 # --- Step 6: Run chroot install script ---
 echo "==> Running chroot install script..."
@@ -138,6 +140,8 @@ rm -f "${ROOT_MNT}/etc/nginx/sites-enabled/default"
 
 cp -v "${SCRIPT_DIR}/rootfs/etc/systemd/system/snapmaker-moonraker.service" \
     "${ROOT_MNT}/etc/systemd/system/snapmaker-moonraker.service"
+cp -v "${SCRIPT_DIR}/rootfs/etc/systemd/system/crowsnest.service" \
+    "${ROOT_MNT}/etc/systemd/system/crowsnest.service"
 
 cp -v "${SCRIPT_DIR}/rootfs/etc/hostname" "${ROOT_MNT}/etc/hostname"
 
@@ -146,11 +150,21 @@ mkdir -p "${ROOT_MNT}/home/pi/.snapmaker"
 cp -v "${SCRIPT_DIR}/rootfs/home/pi/.snapmaker/config.yaml" \
     "${ROOT_MNT}/home/pi/.snapmaker/config.yaml"
 
+# Install crowsnest config files
+mkdir -p "${ROOT_MNT}/home/pi/printer_data/config" \
+         "${ROOT_MNT}/home/pi/printer_data/logs" \
+         "${ROOT_MNT}/home/pi/printer_data/systemd"
+cp -v "${SCRIPT_DIR}/rootfs/home/pi/printer_data/config/crowsnest.conf" \
+    "${ROOT_MNT}/home/pi/printer_data/config/crowsnest.conf"
+cp -v "${SCRIPT_DIR}/rootfs/home/pi/printer_data/systemd/crowsnest.env" \
+    "${ROOT_MNT}/home/pi/printer_data/systemd/crowsnest.env"
+
 # Create gcode directory
 mkdir -p "${ROOT_MNT}/home/pi/gcodes"
 
 # Fix ownership (pi user is UID 1000 on RPi OS)
-chown -R 1000:1000 "${ROOT_MNT}/home/pi/.snapmaker" "${ROOT_MNT}/home/pi/gcodes"
+chown -R 1000:1000 "${ROOT_MNT}/home/pi/.snapmaker" "${ROOT_MNT}/home/pi/gcodes" \
+    "${ROOT_MNT}/home/pi/printer_data"
 
 # --- Step 9: Cleanup chroot mounts ---
 echo "==> Unmounting chroot filesystems..."

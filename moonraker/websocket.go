@@ -268,9 +268,7 @@ func (h *WSHub) handleRPC(client *WSClient, req *jsonRPCRequest) {
 		resp.Result = h.handleAnnouncementsUpdate()
 
 	case "server.webcams.list":
-		resp.Result = map[string]interface{}{
-			"webcams": []interface{}{},
-		}
+		resp.Result = h.server.getWebcamsList()
 
 	// Database methods
 	case "server.database.list":

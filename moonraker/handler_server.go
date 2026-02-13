@@ -15,6 +15,7 @@ func (s *Server) registerServerHandlers() {
 	s.mux.HandleFunc("GET /server/temperature_store", s.handleTemperatureStore)
 	s.mux.HandleFunc("GET /server/gcode_store", s.handleGCodeStore)
 	s.mux.HandleFunc("GET /server/announcements/list", s.handleAnnouncementsList)
+	s.mux.HandleFunc("GET /server/webcams/list", s.handleWebcamsList)
 	s.mux.HandleFunc("GET /machine/system_info", s.handleMachineSystemInfo)
 	s.mux.HandleFunc("GET /machine/proc_stats", s.handleMachineProcStats)
 }
@@ -52,6 +53,7 @@ func (s *Server) loadedComponents() []string {
 		"database",
 		"history",
 		"octoprint_compat",
+		"webcam",
 	}
 }
 
@@ -206,6 +208,36 @@ func (s *Server) machineProcStats() map[string]interface{} {
 			"used":      memStats.Alloc / 1024,
 		},
 		"websocket_connections": len(s.wsHub.clients),
+	}
+}
+
+func (s *Server) handleWebcamsList(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]interface{}{
+		"result": s.getWebcamsList(),
+	})
+}
+
+func (s *Server) getWebcamsList() map[string]interface{} {
+	return map[string]interface{}{
+		"webcams": []map[string]interface{}{
+			{
+				"name":         "Default",
+				"location":     "printer",
+				"service":      "mjpegstreamer-adaptive",
+				"enabled":      true,
+				"icon":         "mdiWebcam",
+				"target_fps":   15,
+				"target_fps_idle": 5,
+				"stream_url":   "/webcam/?action=stream",
+				"snapshot_url": "/webcam/?action=snapshot",
+				"flip_horizontal": false,
+				"flip_vertical":   false,
+				"rotation":     0,
+				"aspect_ratio": "4:3",
+				"source":       "config",
+				"uid":          "default-webcam",
+			},
+		},
 	}
 }
 

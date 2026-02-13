@@ -39,7 +39,7 @@ func DefaultConfig() *Config {
 			Port: 7125,
 		},
 		Printer: PrinterConfig{
-			PollInterval: 2,
+			PollInterval: 5,
 			Model:        "Snapmaker J1S",
 		},
 		Files: FilesConfig{

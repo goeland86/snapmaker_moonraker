@@ -1,13 +1,13 @@
 # Session Log - 2026-02-08
 
 ## Objective
-Implement a Moonraker-to-Snapmaker SACP bridge in Go, following a detailed plan from a prior planning session (transcript: `/home/john/.claude/projects/-home-john-github-snapmaker-moonraker/74f06222-ec0b-45d6-b4d4-8f9c94a2f64a.jsonl`).
+Implement a Moonraker-to-Snapmaker SACP bridge in Go, following a detailed plan from a prior planning session.
 
 ## What Was Done
 
 ### 1. Research Phase
 - Read the prior session transcript for implementation details (Moonraker API formats, SACP protocol, sm2uploader API).
-- Explored the sm2uploader module at `~/go/pkg/mod/github.com/macdylan/sm2uploader@v0.0.0-20240922063303-278df6b7698f/`.
+- Explored the sm2uploader module.
 - Discovered sm2uploader is `package main` (a standalone program), **not importable as a Go library**. This was a key finding that changed the approach.
 
 ### 2. Implementation
@@ -41,7 +41,7 @@ Implement a Moonraker-to-Snapmaker SACP bridge in Go, following a detailed plan 
 - `manager.go` - `Manager` with configurable gcode directory. `ListFiles()` walks directory tree, `GetMetadata()` extracts slicer info from gcode comments, `SaveFile()` with parent dir creation, `ReadFile()`, `DeleteFile()` with path traversal protection. `extractGCodeMeta()` scans first/last 8KB for slicer, estimated_time, filament, layer height.
 
 **Other:**
-- `go.mod` - Module `github.com/john/snapmaker_moonraker`, Go 1.22, deps: `gorilla/websocket v1.5.3`, `gopkg.in/yaml.v3 v3.0.1`.
+- `go.mod` - Module definition, Go 1.22, deps: `gorilla/websocket v1.5.3`, `gopkg.in/yaml.v3 v3.0.1`.
 - `go.sum` - Auto-generated.
 - `LICENSE` - MIT.
 - `README.md` - Architecture diagram, features, build/run instructions, SACP attribution (sm2uploader + kanocz), AI disclosure.
@@ -57,7 +57,7 @@ Implement a Moonraker-to-Snapmaker SACP bridge in Go, following a detailed plan 
 ### 4. Issues Encountered & Resolved
 
 - **sm2uploader not importable**: Discovered at build time. Resolved by vendoring SACP code.
-- **Wrong sm2uploader version hash**: Initial `go.mod` had a guessed hash. Used `GOPROXY=direct go list -m -json` to find correct version `v0.0.0-20240922063303-278df6b7698f`.
+- **Wrong sm2uploader version hash**: Initial `go.mod` had a guessed hash. Used `GOPROXY=direct go list -m -json` to find correct version.
 - **go vet mutex copy warnings**: `State` contained `sync.RWMutex` and was passed by value. Resolved by splitting into `State` (with mutex) and `StateData` (plain data).
 - **Route conflict**: `GET /` conflicted with `/websocket` in Go 1.22+ ServeMux. Resolved by changing to `GET /{$}` (exact match) and `GET /websocket`.
 
@@ -77,9 +77,8 @@ Implement a Moonraker-to-Snapmaker SACP bridge in Go, following a detailed plan 
 
 ### 6. Git & GitHub
 
-- Committed as `365fe89` on `main` branch: "Implement Moonraker-to-Snapmaker SACP bridge"
-- Created GitHub repo: https://github.com/goeland86/snapmaker_moonraker
-- Pushed to `origin/main` via SSH.
+- Committed on `main` branch: "Implement Moonraker-to-Snapmaker SACP bridge"
+- Created GitHub repo and pushed to `origin/main` via SSH.
 
 ## Session 2 - 2026-02-08: Jenkins CI Pipeline for RPi 3 Image Build
 
@@ -160,9 +159,8 @@ Final image stack on the Pi:
 ### Jenkins Agent Docker Image
 - Created `image/Dockerfile.jenkins-agent` based on `jenkins/inbound-agent:latest`
 - Installs all build dependencies: qemu-user-static, parted, e2fsprogs, xz-utils, systemd-container, wget, unzip, sudo
-- Installs Go 1.22.5 and GitHub CLI 2.63.2 (both versions parameterized via `ARG`)
+- Installs Go and GitHub CLI (versions parameterized via `ARG`)
 - Grants jenkins user passwordless sudo for mount/chroot operations
-- Build with: `docker build --network=host -t snapmaker-jenkins-agent -f image/Dockerfile.jenkins-agent .`
 - `--network=host` required during build to avoid DNS resolution failures in Docker
 
 ### Docker Compose Integration
@@ -184,9 +182,9 @@ The agent can be added to an existing Jenkins docker-compose setup:
 - Added "Raspberry Pi Image Build" section with agent build instructions, local build steps, and image architecture diagram
 
 ### Git
-- `1f51953` - "Add Jenkins CI pipeline to build Raspberry Pi 3 SD card image"
-- `3a20eeb` - "Add Dockerfile for Jenkins agent with RPi image build dependencies"
-- `aef4a62` - "Add RPi image build instructions to README"
+- "Add Jenkins CI pipeline to build Raspberry Pi 3 SD card image"
+- "Add Dockerfile for Jenkins agent with RPi image build dependencies"
+- "Add RPi image build instructions to README"
 - All pushed to `origin/main`
 
 ---
@@ -335,8 +333,8 @@ Analyzed the [moonraker-obico](https://github.com/TheSpaghettiDetective/moonrake
 - Handles case where release already exists
 
 ### Git
-- `c8578c3` - "Improve GitHub release artifact upload in Jenkinsfile"
-- `a6bbf53` - "Add database and history APIs for Obico integration"
+- "Improve GitHub release artifact upload in Jenkinsfile"
+- "Add database and history APIs for Obico integration"
 - Both pushed to `origin/main`
 
 ---
@@ -364,11 +362,6 @@ Fix Jenkins pipeline not creating GitHub releases even when a tag exists on the 
 
 ### Problem
 The `Publish to GitHub Release` stage was being skipped despite the tag `v0.0.2` existing on the commit. The pipeline used `when { buildingTag() }` which only returns true when Jenkins specifically triggers a build *for* a tag, not when a branch commit happens to have a tag pointing to it.
-
-From the Jenkins log:
-```
-Checking out Revision f51534cc11e9c01c6c910cd967b3933a9dbad140 (origin/main, refs/tags/v0.0.2)
-```
 
 Jenkins was treating this as a branch build (`origin/main`), not a tag build.
 
@@ -401,9 +394,8 @@ TAG_NAME=$(git describe --exact-match --tags HEAD)
 - GitHub release and artifact created successfully
 
 ### Git
-- `8f40edc` - "Fix tag detection in Jenkinsfile to work with any build trigger"
+- "Fix tag detection in Jenkinsfile to work with any build trigger"
 - Pushed to `origin/main`
-- Tag `v0.0.2` recreated on commit `8f40edc`
 
 ---
 
@@ -551,3 +543,54 @@ Moonraker API returns correct data for all three heaters:
 - `moonraker/objects.go` - Added system_stats object
 - `files/manager.go` - Added GetDirectory method
 - `image/chroot-install.sh` - Added SSH banner removal
+
+---
+
+## Session 6 - 2026-02-13: HTTP Status Polling for Print Progress & Branding
+
+### Objective
+Wire up the Snapmaker HTTP status API so Mainsail shows real print progress, filename, and pause/resume/cancel buttons during prints. Also change the SACP connection identifier displayed on the printer screen.
+
+### Background
+`Client.GetStatus()` only returned SACP temperature data with a hardcoded `"IDLE"` status, even though `getStatusHTTP()` existed and returns real print state (RUNNING/PAUSED/IDLE, filename, progress, elapsed time, positions, fan speed). Mainsail always showed "standby" and never displayed print controls. Pause/resume/cancel were already implemented (M25/M24/M26 via SACP) but the buttons never appeared because the printer never reported as "printing".
+
+### What Was Done
+
+#### 1. `printer/client.go` — Merge HTTP status into `GetStatus()`
+
+Updated `GetStatus()` to call `getStatusHTTP()` for the full printer status (state, progress, filename, positions, fan) and overlay SACP temperature data on top (SACP temps are more accurate from the binary protocol). Falls back to `"IDLE"` if the HTTP call fails.
+
+The existing `StatePoller.poll()` → `parseStatus()` → `BroadcastStatusUpdate()` pipeline works unchanged — it just receives richer data now.
+
+#### 2. `printer/state.go` — Fix state reset on print completion
+
+Fixed three bugs in `parseStatus()` where fields never reset to zero after a print completes:
+
+- **Progress**: Removed `v > 0` guard — now always writes, so progress resets to 0 when print finishes
+- **Filename**: Clears to `""` when printer state is idle and HTTP doesn't return a fileName key
+- **Duration**: Removed `v > 0` guard — always writes
+- **FanSpeed**: Removed `v > 0` guard — always writes (keeps /100 conversion)
+
+#### 3. `config.go` + `image/rootfs/.../config.yaml` — Poll interval to 5s
+
+Changed default poll interval from 2s to 5s in both the Go default config and the deployed RPi config. The HTTP status endpoint adds latency per poll cycle, and 5s is sufficient for dashboard updates.
+
+#### 4. `sacp/sacp.go` — SACP connection identifier
+
+Changed the SACP connect handshake identifier from `sm2uploader` to `Moonraker Remote Control`. This string is displayed on the printer's touchscreen when the bridge connects. Updated the length prefix byte from 11 to 24 to match the new string length.
+
+### Files Modified
+- `printer/client.go` — `GetStatus()` now calls `getStatusHTTP()` + overlays SACP temps
+- `printer/state.go` — `parseStatus()` always updates progress/duration/fan/filename
+- `config.go` — Default `PollInterval: 5`
+- `image/rootfs/home/pi/.snapmaker/config.yaml` — `poll_interval: 5`
+- `sacp/sacp.go` — Connect handshake identifier string
+
+### What Already Works (no changes needed)
+- `StatePoller` polls at configured interval and calls `BroadcastStatusUpdate()` — `printer/state.go`
+- `print_stats` / `virtual_sdcard` / `display_status` objects map state correctly — `moonraker/objects.go`
+- Pause (M25), Resume (M24), Cancel (M26) via SACP `ExecuteGCode` — `moonraker/websocket.go`
+- HTTP handlers for pause/resume/cancel — `moonraker/handler_printer.go`
+
+### Verification
+- `go build ./...` compiles clean

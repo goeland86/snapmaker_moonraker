@@ -178,7 +178,8 @@ func Connect(ip string, timeout time.Duration) (net.Conn, error) {
 		CommandSet: 0x01,
 		CommandID:  0x05,
 		Data: []byte{
-			11, 0, 's', 'm', '2', 'u', 'p', 'l', 'o', 'a', 'd', 'e', 'r',
+			24, 0, 'M', 'o', 'o', 'n', 'r', 'a', 'k', 'e', 'r', ' ',
+			'R', 'e', 'm', 'o', 't', 'e', ' ', 'C', 'o', 'n', 't', 'r', 'o', 'l',
 			0, 0,
 			0, 0,
 		},

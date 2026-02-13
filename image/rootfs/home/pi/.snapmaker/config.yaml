@@ -6,7 +6,7 @@ printer:
   ip: ""          # Snapmaker J1S IP address (set after boot)
   token: ""       # Authentication token (confirmed at printer HMI)
   model: "Snapmaker J1S"
-  poll_interval: 2
+  poll_interval: 5
 
 files:
   gcode_dir: "/home/pi/gcodes"

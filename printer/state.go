@@ -197,21 +197,22 @@ func (sp *StatePoller) parseStatus(status map[string]interface{}) {
 	sp.state.data.Y = floatFromMap(status, "y")
 	sp.state.data.Z = floatFromMap(status, "z")
 
-	if v := floatFromMap(status, "progress"); v > 0 {
-		sp.state.data.PrintProgress = v / 100.0
-	}
+	// Progress: always update so it resets to 0 when print completes.
+	sp.state.data.PrintProgress = floatFromMap(status, "progress") / 100.0
 
+	// Filename: update from HTTP response; clear when idle.
 	if v, ok := status["fileName"].(string); ok {
 		sp.state.data.PrintFileName = v
-	}
-	if v := floatFromMap(status, "elapsedTime", "printTime"); v > 0 {
-		sp.state.data.PrintDuration = v
+	} else if sp.state.data.PrinterState == "idle" {
+		sp.state.data.PrintFileName = ""
 	}
 
-	// Fan speed (Snapmaker reports as percentage 0-100, convert to 0.0-1.0)
-	if v := floatFromMap(status, "fanSpeed", "fan"); v > 0 {
-		sp.state.data.FanSpeed = v / 100.0
-	}
+	// Duration: always update so it resets to 0 when print completes.
+	sp.state.data.PrintDuration = floatFromMap(status, "elapsedTime", "printTime")
+
+	// Fan speed (Snapmaker reports as percentage 0-100, convert to 0.0-1.0).
+	// Always update so it resets to 0 when fan stops.
+	sp.state.data.FanSpeed = floatFromMap(status, "fanSpeed", "fan") / 100.0
 }
 
 // floatFromMap tries multiple keys and returns the first float value found.

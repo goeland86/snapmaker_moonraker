@@ -368,21 +368,27 @@ func (c *Client) ExecuteGCode(gcode string) (string, error) {
 	return "", nil
 }
 
-// GetStatus returns the current printer status from subscription data.
+// GetStatus returns the current printer status by merging the Snapmaker HTTP
+// API (progress, filename, state, positions, fan) with SACP temperature data.
 func (c *Client) GetStatus() (map[string]interface{}, error) {
 	if !c.Connected() {
 		return nil, fmt.Errorf("not connected")
 	}
 
+	// Fetch status from Snapmaker HTTP API (progress, filename, state, positions, fan).
+	result, err := getStatusHTTP(c.ip, c.token)
+	if err != nil {
+		// Fall back to SACP-only data if HTTP fails.
+		result = map[string]interface{}{
+			"status": "IDLE",
+		}
+	}
+
+	// Overlay SACP temperature data (more accurate than HTTP).
 	c.subMu.RLock()
 	defer c.subMu.RUnlock()
 
-	result := map[string]interface{}{
-		"status": "IDLE",
-	}
-
 	for _, e := range c.extruderData {
-		// J1S sends separate packets per nozzle: HeadID=0 → T0 (left), HeadID=1 → T1 (right).
 		switch e.HeadID {
 		case 0:
 			result["t0Temp"] = e.CurrentTemp

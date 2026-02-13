@@ -9,7 +9,7 @@ StartLimitBurst=3
 Type=simple
 User=pi
 EnvironmentFile=/home/pi/printer_data/systemd/crowsnest.env
-ExecStart=/opt/crowsnest/crowsnest ${CROWSNEST_ARGS}
+ExecStart=/home/pi/crowsnest/crowsnest ${CROWSNEST_ARGS}
 Restart=on-failure
 RestartSec=5
 

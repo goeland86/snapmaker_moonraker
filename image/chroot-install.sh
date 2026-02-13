@@ -22,15 +22,12 @@ wget -q -O /tmp/mainsail.zip "${MAINSAIL_URL}"
 unzip -qo /tmp/mainsail.zip -d /var/www/mainsail
 rm -f /tmp/mainsail.zip
 
-echo "==> [chroot] Building ustreamer from source..."
-git clone --depth 1 https://github.com/pikvm/ustreamer.git /tmp/ustreamer
-make -C /tmp/ustreamer -j$(nproc)
-cp /tmp/ustreamer/ustreamer /usr/local/bin/ustreamer
-chmod 755 /usr/local/bin/ustreamer
-rm -rf /tmp/ustreamer
-
 echo "==> [chroot] Installing crowsnest..."
-git clone --depth 1 https://github.com/mainsail-crew/crowsnest.git /opt/crowsnest
+git clone --depth 1 https://github.com/mainsail-crew/crowsnest.git /home/pi/crowsnest
+cd /home/pi/crowsnest
+make build
+chown -R 1000:1000 /home/pi/crowsnest
+cd /
 
 echo "==> [chroot] Creating printer_data directories..."
 mkdir -p /home/pi/printer_data/{config,logs,systemd}

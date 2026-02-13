@@ -152,12 +152,9 @@ cp -v "${SCRIPT_DIR}/rootfs/home/pi/.snapmaker/config.yaml" \
 
 # Install crowsnest config files
 mkdir -p "${ROOT_MNT}/home/pi/printer_data/config" \
-         "${ROOT_MNT}/home/pi/printer_data/logs" \
-         "${ROOT_MNT}/home/pi/printer_data/systemd"
+         "${ROOT_MNT}/home/pi/printer_data/logs"
 cp -v "${SCRIPT_DIR}/rootfs/home/pi/printer_data/config/crowsnest.conf" \
     "${ROOT_MNT}/home/pi/printer_data/config/crowsnest.conf"
-cp -v "${SCRIPT_DIR}/rootfs/home/pi/printer_data/systemd/crowsnest.env" \
-    "${ROOT_MNT}/home/pi/printer_data/systemd/crowsnest.env"
 
 # Create gcode directory
 mkdir -p "${ROOT_MNT}/home/pi/gcodes"

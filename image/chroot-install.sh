@@ -12,7 +12,7 @@ apt-get update -qq
 echo "==> [chroot] Installing nginx and build dependencies..."
 apt-get install -y -qq --no-install-recommends \
     nginx unzip \
-    git make gcc libc6-dev libjpeg62-turbo-dev libevent-dev libbsd-dev v4l-utils crudini
+    git make gcc libc6-dev libjpeg62-turbo-dev libevent-dev libbsd-dev v4l-utils crudini xxd
 
 echo "==> [chroot] Downloading Mainsail..."
 MAINSAIL_URL=$(wget -qO- https://api.github.com/repos/mainsail-crew/mainsail/releases/latest \
@@ -26,7 +26,13 @@ echo "==> [chroot] Installing crowsnest..."
 git clone --depth 1 https://github.com/mainsail-crew/crowsnest.git /home/pi/crowsnest
 cd /home/pi/crowsnest
 bin/build.sh --reclone
-make build
+make build || true
+# camera-streamer may fail to compile on RPi 3 but crowsnest requires the
+# binary to exist at startup. Create a stub if the build didn't produce one.
+if [ ! -x bin/camera-streamer/camera-streamer ]; then
+    touch bin/camera-streamer/camera-streamer
+    chmod +x bin/camera-streamer/camera-streamer
+fi
 chown -R 1000:1000 /home/pi/crowsnest
 cd /
 

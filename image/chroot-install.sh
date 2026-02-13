@@ -12,7 +12,7 @@ apt-get update -qq
 echo "==> [chroot] Installing nginx and build dependencies..."
 apt-get install -y -qq --no-install-recommends \
     nginx unzip \
-    git make gcc libc6-dev libjpeg62-turbo-dev libevent-dev v4l-utils crudini
+    git make gcc libc6-dev libjpeg62-turbo-dev libevent-dev libbsd-dev v4l-utils crudini
 
 echo "==> [chroot] Downloading Mainsail..."
 MAINSAIL_URL=$(wget -qO- https://api.github.com/repos/mainsail-crew/mainsail/releases/latest \

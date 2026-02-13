@@ -25,6 +25,7 @@ rm -f /tmp/mainsail.zip
 echo "==> [chroot] Installing crowsnest..."
 git clone --depth 1 https://github.com/mainsail-crew/crowsnest.git /home/pi/crowsnest
 cd /home/pi/crowsnest
+bin/build.sh --reclone
 make build
 chown -R 1000:1000 /home/pi/crowsnest
 cd /

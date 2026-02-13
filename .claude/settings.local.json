@@ -14,7 +14,10 @@
       "Bash(go build:*)",
       "Bash(go vet:*)",
       "Bash(timeout:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(ssh:*)",
+      "Bash(GOOS=linux GOARCH=arm GOARM=7 go build:*)",
+      "Bash(scp:*)"
     ]
   }
 }

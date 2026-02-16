@@ -93,10 +93,11 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		root = "gcodes"
 	}
 
-	// Determine filename - use path if provided, otherwise header filename.
-	filename := r.FormValue("path")
-	if filename == "" {
-		filename = header.Filename
+	// In Moonraker's API, "path" is the subdirectory within the root,
+	// and the actual filename comes from the multipart file header.
+	filename := header.Filename
+	if subdir := r.FormValue("path"); subdir != "" {
+		filename = subdir + "/" + filename
 	}
 
 	data, err := io.ReadAll(file)

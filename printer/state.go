@@ -213,6 +213,11 @@ func (sp *StatePoller) parseStatus(status map[string]interface{}) {
 	// Fan speed (Snapmaker reports as percentage 0-100, convert to 0.0-1.0).
 	// Always update so it resets to 0 when fan stops.
 	sp.state.data.FanSpeed = floatFromMap(status, "fanSpeed", "fan") / 100.0
+
+	// Homed axes: set from coordinate query data.
+	if v, ok := status["homed"].(bool); ok && v {
+		sp.state.data.HomedAxes = "xyz"
+	}
 }
 
 // floatFromMap tries multiple keys and returns the first float value found.

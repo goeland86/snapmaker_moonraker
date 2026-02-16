@@ -12,7 +12,8 @@ apt-get update -qq
 echo "==> [chroot] Installing nginx and build dependencies..."
 apt-get install -y -qq --no-install-recommends \
     nginx unzip \
-    git make gcc libc6-dev libjpeg62-turbo-dev libevent-dev libbsd-dev v4l-utils crudini xxd \
+    git make gcc g++ libc6-dev libjpeg62-turbo-dev libevent-dev libbsd-dev v4l-utils crudini xxd \
+    cmake \
     python3 python3-pip python3-virtualenv ffmpeg
 
 echo "==> [chroot] Downloading Mainsail..."

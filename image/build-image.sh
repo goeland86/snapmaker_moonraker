@@ -66,8 +66,8 @@ cp "${WORK_DIR}/${RPI_IMAGE}" "${WORK_DIR}/${OUTPUT_NAME}.img"
 IMG="${WORK_DIR}/${OUTPUT_NAME}.img"
 
 # --- Step 3: Expand image to fit additional software ---
-echo "==> Expanding image by 512MB..."
-truncate -s +512M "${IMG}"
+echo "==> Expanding image by 1536MB..."
+truncate -s +1536M "${IMG}"
 
 # Grow the root partition (partition 2) to fill available space
 PART_START=$(parted -ms "${IMG}" unit s print | grep '^2:' | cut -d: -f2 | tr -d 's')

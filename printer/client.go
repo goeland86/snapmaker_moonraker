@@ -27,9 +27,16 @@ type Client struct {
 	writeMu sync.Mutex // serializes writes to conn
 
 	// Subscription data (updated asynchronously by the packet router).
-	subMu        sync.RWMutex
-	extruderData []sacp.ExtruderData
-	bedData      []sacp.BedZoneData
+	subMu         sync.RWMutex
+	extruderData  []sacp.ExtruderData
+	bedData       []sacp.BedZoneData
+	machineStatus sacp.MachineStatus
+	currentLine   uint32
+	totalLines    uint32
+	printTime     uint32 // elapsed seconds
+	printFilename string
+	fanData       []sacp.FanData
+	coordData     sacp.CoordinateData
 }
 
 // NewClient creates a new printer client.
@@ -42,7 +49,7 @@ func NewClient(ip, token, model string) *Client {
 }
 
 // Connect establishes a SACP TCP connection to the printer,
-// starts the background packet router, and subscribes to temperature data.
+// starts the background packet router, and subscribes to data feeds.
 func (c *Client) Connect() error {
 	// Clean up any existing connection first.
 	c.mu.Lock()
@@ -67,14 +74,58 @@ func (c *Client) Connect() error {
 
 	log.Printf("Connected to printer at %s:%d via SACP", c.ip, sacp.Port)
 
-	// Initial temperature query.
-	go c.QueryTemperatures()
+	// Subscribe to data feeds and do initial queries.
+	go c.setupSubscriptions()
 	return nil
 }
 
+// setupSubscriptions subscribes to SACP data feeds after connection.
+func (c *Client) setupSubscriptions() {
+	// Initial temperature query.
+	c.QueryTemperatures()
+
+	// Subscribe to status feeds via the SACP subscription mechanism.
+	// Send subscribe request to CommandSet=0x01, CommandID=0x00 with
+	// payload [target_cmdset, target_cmdid, interval_lo, interval_hi].
+	subs := []struct {
+		cmdSet, cmdID byte
+		name          string
+	}{
+		{0x01, 0xA0, "heartbeat"},
+		{0xAC, 0xA0, "current line"},
+		{0xAC, 0xA5, "print time"},
+		{0x10, 0xA3, "fan info"},
+	}
+	for _, s := range subs {
+		if err := c.subscribeTo(s.cmdSet, s.cmdID, 2000); err != nil {
+			log.Printf("Subscribe %s (0x%02x/0x%02x) failed: %v", s.name, s.cmdSet, s.cmdID, err)
+		} else {
+			log.Printf("Subscribed to %s", s.name)
+		}
+	}
+
+	// One-shot coordinate query.
+	c.queryCoordinates()
+}
+
+// subscribeTo sends a SACP subscription request via the generic mechanism
+// (CommandSet 0x01, CommandID 0x00).
+func (c *Client) subscribeTo(targetCmdSet, targetCmdID byte, intervalMs uint16) error {
+	data := []byte{
+		targetCmdSet,
+		targetCmdID,
+		byte(intervalMs & 0xFF),
+		byte(intervalMs >> 8),
+	}
+	return c.sendCommand(0x01, 0x00, data)
+}
+
+// Token returns the current authentication token.
+func (c *Client) Token() string {
+	return c.token
+}
+
 // QueryTemperatures sends one-shot temperature queries for extruder and bed.
-// The J1S responds with an ACK followed by a data push; the data push is
-// handled asynchronously by the packet router's subscription handler.
 func (c *Client) QueryTemperatures() {
 	c.mu.Lock()
 	conn := c.conn
@@ -120,18 +171,123 @@ func (c *Client) sendQuery(conn net.Conn, router *PacketRouter, commandSet, comm
 	return nil
 }
 
+// queryCoordinates sends a one-shot coordinate query (CommandSet 0x01, CommandID 0x30).
+func (c *Client) queryCoordinates() {
+	c.mu.Lock()
+	conn := c.conn
+	router := c.router
+	c.mu.Unlock()
+	if conn == nil || router == nil {
+		return
+	}
+
+	c.writeMu.Lock()
+	seq, err := sacp.WritePacket(conn, 0x01, 0x30, nil, sacpTimeout)
+	c.writeMu.Unlock()
+	if err != nil {
+		log.Printf("Coordinate query send failed: %v", err)
+		return
+	}
+
+	resp, err := router.WaitForResponse(seq, sacpTimeout)
+	if err != nil {
+		log.Printf("Coordinate query timeout: %v", err)
+		return
+	}
+
+	if resp != nil && len(resp.Data) > 4 {
+		c.handleSubscription(0x01, 0x30, resp.Data)
+	}
+}
+
+// queryFileInfo queries the current print file info (CommandSet 0xAC, CommandID 0x00).
+func (c *Client) queryFileInfo() {
+	c.mu.Lock()
+	conn := c.conn
+	router := c.router
+	c.mu.Unlock()
+	if conn == nil || router == nil {
+		return
+	}
+
+	// Query basic file info from the controller.
+	c.writeMu.Lock()
+	seq, err := sacp.WritePacket(conn, 0xAC, 0x00, nil, sacpTimeout)
+	c.writeMu.Unlock()
+	if err != nil {
+		log.Printf("File info query send failed: %v", err)
+		return
+	}
+
+	resp, err := router.WaitForResponse(seq, sacpTimeout)
+	if err != nil {
+		log.Printf("File info query timeout: %v", err)
+		return
+	}
+
+	if resp != nil && len(resp.Data) > 1 {
+		fi, err := sacp.ParseFileInfo(resp.Data)
+		if err != nil {
+			log.Printf("File info parse error: %v (data=%x)", err, resp.Data)
+			return
+		}
+		c.subMu.Lock()
+		c.printFilename = fi.Filename
+		c.subMu.Unlock()
+		log.Printf("Print file: %s", fi.Filename)
+	}
+
+	// Also try to get total lines and estimated time from the screen (0xAC/0x1A).
+	c.queryPrintingFileInfo()
+}
+
+// queryPrintingFileInfo queries extended file info from the screen MCU.
+func (c *Client) queryPrintingFileInfo() {
+	c.mu.Lock()
+	conn := c.conn
+	router := c.router
+	c.mu.Unlock()
+	if conn == nil || router == nil {
+		return
+	}
+
+	c.writeMu.Lock()
+	seq, err := sacp.WritePacketTo(conn, 2, 0xAC, 0x1A, nil, sacpTimeout)
+	c.writeMu.Unlock()
+	if err != nil {
+		return
+	}
+
+	resp, err := router.WaitForResponse(seq, 3*time.Second)
+	if err != nil {
+		log.Printf("Printing file info not available (screen query): %v", err)
+		return
+	}
+
+	if resp != nil && len(resp.Data) > 1 {
+		fi, err := sacp.ParsePrintingFileInfo(resp.Data)
+		if err != nil {
+			log.Printf("Printing file info parse error: %v (data=%x)", err, resp.Data)
+			return
+		}
+		c.subMu.Lock()
+		if fi.Filename != "" {
+			c.printFilename = fi.Filename
+		}
+		c.totalLines = fi.TotalLines
+		c.subMu.Unlock()
+		log.Printf("Print details: file=%s totalLines=%d estTime=%ds", fi.Filename, fi.TotalLines, fi.EstimatedTime)
+	}
+}
+
 // handleSubscription is called by the packet router when subscription/query data arrives.
 func (c *Client) handleSubscription(commandSet, commandID byte, data []byte) {
 	switch {
 	case commandSet == 0x10 && commandID == 0xa0:
+		// Extruder temperature data.
 		extruders := sacp.ParseExtruderInfo(data)
-		for _, e := range extruders {
-			log.Printf("Extruder head=%d idx=%d: cur=%.1f°C target=%.1f°C", e.HeadID, e.Index, e.CurrentTemp, e.TargetTemp)
-		}
 		if len(extruders) > 0 {
 			c.subMu.Lock()
-			// J1S sends separate packets per nozzle (HeadID=0 for T0, HeadID=1 for T1).
-			// Merge into the existing slice rather than replacing.
 			for _, e := range extruders {
 				found := false
 				for i, existing := range c.extruderData {
@@ -149,16 +305,99 @@ func (c *Client) handleSubscription(commandSet, commandID byte, data []byte) {
 		}
 
 	case commandSet == 0x14 && commandID == 0xa0:
+		// Bed temperature data.
 		zones := sacp.ParseBedInfo(data)
-		log.Printf("Bed data: %d bytes, raw=%x, parsed %d zones", len(data), data, len(zones))
-		for _, z := range zones {
-			log.Printf("  Bed[%d]: cur=%.1f°C target=%.1f°C", z.Index, z.CurrentTemp, z.TargetTemp)
-		}
 		if len(zones) > 0 {
 			c.subMu.Lock()
 			c.bedData = zones
 			c.subMu.Unlock()
 		}
+
+	case commandSet == 0x01 && commandID == 0xa0:
+		// Heartbeat - machine status.
+		status, err := sacp.ParseHeartbeat(data)
+		if err != nil {
+			log.Printf("Heartbeat parse error: %v (data=%x)", err, data)
+			return
+		}
+
+		c.subMu.Lock()
+		prevStatus := c.machineStatus
+		c.machineStatus = status
+		c.subMu.Unlock()
+
+		if status != prevStatus {
+			log.Printf("Machine status: %s -> %s", prevStatus, status)
+		}
+
+		// When transitioning to printing, query file info.
+		if (status == sacp.MachineStatusPrinting || status == sacp.MachineStatusStarting) &&
+			prevStatus != sacp.MachineStatusPrinting && prevStatus != sacp.MachineStatusStarting {
+			go c.queryFileInfo()
+		}
+
+		// When idle/completed/stopped, clear print data.
+		if status == sacp.MachineStatusIdle || status == sacp.MachineStatusCompleted || status == sacp.MachineStatusStopped {
+			c.subMu.Lock()
+			c.printFilename = ""
+			c.currentLine = 0
+			c.totalLines = 0
+			c.printTime = 0
+			c.subMu.Unlock()
+		}
+
+	case commandSet == 0xAC && commandID == 0xa0:
+		// Current print line number.
+		line, err := sacp.ParseCurrentLine(data)
+		if err != nil {
+			return
+		}
+		c.subMu.Lock()
+		c.currentLine = line
+		c.subMu.Unlock()
+
+	case commandSet == 0xAC && commandID == 0xa5:
+		// Elapsed print time.
+		secs, err := sacp.ParsePrintTime(data)
+		if err != nil {
+			return
+		}
+		c.subMu.Lock()
+		c.printTime = secs
+		c.subMu.Unlock()
+
+	case commandSet == 0x10 && commandID == 0xa3:
+		// Fan info.
+		fans, err := sacp.ParseFanInfo(data)
+		if err != nil {
+			return
+		}
+		c.subMu.Lock()
+		for _, f := range fans {
+			found := false
+			for i, existing := range c.fanData {
+				if existing.HeadID == f.HeadID && existing.FanIndex == f.FanIndex {
+					c.fanData[i] = f
+					found = true
+					break
+				}
+			}
+			if !found {
+				c.fanData = append(c.fanData, f)
+			}
+		}
+		c.subMu.Unlock()
+
+	case commandSet == 0x01 && commandID == 0x30:
+		// Coordinate info.
+		cd, err := sacp.ParseCoordinateInfo(data)
+		if err != nil {
+			log.Printf("Coordinate parse error: %v (data=%x)", err, data)
+			return
+		}
+		c.subMu.Lock()
+		c.coordData = cd
+		c.subMu.Unlock()
 	}
 }
 
@@ -175,6 +414,12 @@ func (c *Client) handleDisconnect() {
 	c.subMu.Lock()
 	c.extruderData = nil
 	c.bedData = nil
+	c.fanData = nil
+	c.machineStatus = sacp.MachineStatusIdle
+	c.currentLine = 0
+	c.totalLines = 0
+	c.printTime = 0
+	c.printFilename = ""
 	c.subMu.Unlock()
 
 	log.Printf("Printer connection lost")
@@ -207,6 +452,8 @@ func (c *Client) Disconnect() error {
 	c.subMu.Lock()
 	c.extruderData = nil
 	c.bedData = nil
+	c.fanData = nil
+	c.machineStatus = sacp.MachineStatusIdle
 	c.subMu.Unlock()
 
 	return nil
@@ -314,7 +561,7 @@ func (c *Client) Upload(filename string, data []byte) error {
 	c.router = newRouter
 	c.mu.Unlock()
 
-	go c.QueryTemperatures()
+	go c.setupSubscriptions()
 
 	return err
 }
@@ -368,26 +615,62 @@ func (c *Client) ExecuteGCode(gcode string) (string, error) {
 	return "", nil
 }
 
-// GetStatus returns the current printer status by merging the Snapmaker HTTP
-// API (progress, filename, state, positions, fan) with SACP temperature data.
+// GetStatus returns the current printer status entirely from SACP subscription data.
 func (c *Client) GetStatus() (map[string]interface{}, error) {
 	if !c.Connected() {
 		return nil, fmt.Errorf("not connected")
 	}
 
-	// Fetch status from Snapmaker HTTP API (progress, filename, state, positions, fan).
-	result, err := getStatusHTTP(c.ip, c.token)
-	if err != nil {
-		// Fall back to SACP-only data if HTTP fails.
-		result = map[string]interface{}{
-			"status": "IDLE",
-		}
-	}
-
-	// Overlay SACP temperature data (more accurate than HTTP).
 	c.subMu.RLock()
 	defer c.subMu.RUnlock()
 
+	// Map machine status to the string format expected by parseStatus.
+	status := "IDLE"
+	switch c.machineStatus {
+	case sacp.MachineStatusIdle, sacp.MachineStatusCompleted, sacp.MachineStatusStopped:
+		status = "IDLE"
+	case sacp.MachineStatusPrinting, sacp.MachineStatusStarting,
+		sacp.MachineStatusFinishing, sacp.MachineStatusResuming:
+		status = "RUNNING"
+	case sacp.MachineStatusPaused, sacp.MachineStatusPausing:
+		status = "PAUSED"
+	case sacp.MachineStatusStopping:
+		status = "RUNNING"
+	case sacp.MachineStatusRecovering:
+		status = "PAUSED"
+	}
+
+	// Calculate progress from current/total lines.
+	progress := 0.0
+	if c.totalLines > 0 {
+		progress = float64(c.currentLine) / float64(c.totalLines) * 100.0
+		if progress > 100 {
+			progress = 100
+		}
+	}
+
+	// Get part fan speed (fan type 0 = part fan). Convert 0-255 to 0-100%.
+	fanSpeed := 0.0
+	for _, f := range c.fanData {
+		if f.FanType == 0 {
+			fanSpeed = float64(f.Speed) / 255.0 * 100.0
+			break
+		}
+	}
+
+	result := map[string]interface{}{
+		"status":      status,
+		"progress":    progress,
+		"elapsedTime": float64(c.printTime),
+		"fileName":    c.printFilename,
+		"x":           c.coordData.X,
+		"y":           c.coordData.Y,
+		"z":           c.coordData.Z,
+		"fanSpeed":    fanSpeed,
+		"homed":       c.coordData.Homed,
+	}
+
+	// Temperature data.
 	for _, e := range c.extruderData {
 		switch e.HeadID {
 		case 0:

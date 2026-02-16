@@ -459,17 +459,224 @@ type BedZoneData struct {
 	TargetTemp  float64
 }
 
+// MachineStatus represents the printer's system status from the heartbeat.
+type MachineStatus uint8
+
+const (
+	MachineStatusIdle       MachineStatus = 0
+	MachineStatusStarting   MachineStatus = 1
+	MachineStatusPrinting   MachineStatus = 2
+	MachineStatusPausing    MachineStatus = 3
+	MachineStatusPaused     MachineStatus = 4
+	MachineStatusStopping   MachineStatus = 5
+	MachineStatusStopped    MachineStatus = 6
+	MachineStatusFinishing  MachineStatus = 7
+	MachineStatusCompleted  MachineStatus = 8
+	MachineStatusRecovering MachineStatus = 9
+	MachineStatusResuming   MachineStatus = 10
+)
+
+func (s MachineStatus) String() string {
+	names := [...]string{
+		"IDLE", "STARTING", "PRINTING", "PAUSING", "PAUSED",
+		"STOPPING", "STOPPED", "FINISHING", "COMPLETED",
+		"RECOVERING", "RESUMING",
+	}
+	if int(s) < len(names) {
+		return names[s]
+	}
+	return fmt.Sprintf("UNKNOWN(%d)", s)
+}
+
+// ParseHeartbeat parses heartbeat subscription data (CommandSet 0x01, CommandID 0xA0).
+// Format: byte[0]=result, byte[1]=status.
+func ParseHeartbeat(data []byte) (MachineStatus, error) {
+	if len(data) < 2 {
+		return 0, fmt.Errorf("heartbeat data too short: %d bytes", len(data))
+	}
+	return MachineStatus(data[1]), nil
+}
+
+// ParseCurrentLine parses print line subscription data (CommandSet 0xAC, CommandID 0xA0).
+// Format: byte[0]=result, byte[1-4]=current_line (uint32 LE).
+func ParseCurrentLine(data []byte) (uint32, error) {
+	if len(data) < 5 {
+		return 0, fmt.Errorf("current line data too short: %d bytes", len(data))
+	}
+	return binary.LittleEndian.Uint32(data[1:5]), nil
+}
+
+// ParsePrintTime parses elapsed time subscription data (CommandSet 0xAC, CommandID 0xA5).
+// Format: byte[0]=result, byte[1-4]=elapsed_seconds (uint32 LE).
+func ParsePrintTime(data []byte) (uint32, error) {
+	if len(data) < 5 {
+		return 0, fmt.Errorf("print time data too short: %d bytes", len(data))
+	}
+	return binary.LittleEndian.Uint32(data[1:5]), nil
+}
+
+// FanData holds parsed fan info from subscription (CommandSet 0x10, CommandID 0xA3).
+type FanData struct {
+	HeadID   int
+	FanIndex int
+	FanType  int   // 0=part fan, 2=hotend fan
+	Speed    uint8 // 0-255
+}
+
+// ParseFanInfo parses fan subscription data.
+// Format: byte[0]=result, byte[1]=key/head_id, byte[2]=fan_count,
+// then fan_count * 3 bytes: [fan_index, fan_type, fan_speed].
+func ParseFanInfo(data []byte) ([]FanData, error) {
+	if len(data) < 3 {
+		return nil, fmt.Errorf("fan data too short: %d bytes", len(data))
+	}
+	headID := int(data[1])
+	fanCount := int(data[2])
+	offset := 3
+	var fans []FanData
+	for i := 0; i < fanCount && offset+3 <= len(data); i++ {
+		fans = append(fans, FanData{
+			HeadID:   headID,
+			FanIndex: int(data[offset]),
+			FanType:  int(data[offset+1]),
+			Speed:    data[offset+2],
+		})
+		offset += 3
+	}
+	return fans, nil
+}
+
+// CoordinateData holds parsed position info.
+type CoordinateData struct {
+	Homed   bool
+	X, Y, Z float64
+}
+
+// ParseCoordinateInfo parses coordinate data (CommandSet 0x01, CommandID 0x30).
+// Format: byte[0]=result, byte[1]=homed(0=yes), byte[2]=coord_system_id,
+// byte[3]=is_origin_offset, byte[4]=axis_count,
+// then axis_count * 5 bytes: [axis_id(1) + position_um(int32 LE)].
+func ParseCoordinateInfo(data []byte) (CoordinateData, error) {
+	var cd CoordinateData
+	if len(data) < 5 {
+		return cd, fmt.Errorf("coordinate data too short: %d bytes", len(data))
+	}
+
+	cd.Homed = data[1] == 0 // 0 = homed
+	axisCount := int(data[4])
+	offset := 5
+
+	for i := 0; i < axisCount && offset+5 <= len(data); i++ {
+		axis := data[offset]
+		value := float64(int32(binary.LittleEndian.Uint32(data[offset+1:offset+5]))) / 1000.0
+		switch axis {
+		case 0:
+			cd.X = value // X1
+		case 1:
+			cd.Y = value // Y1
+		case 2:
+			cd.Z = value // Z1
+		}
+		offset += 5
+	}
+
+	return cd, nil
+}
+
+// PrintFileInfo holds parsed file info for the current print job.
+type PrintFileInfo struct {
+	MD5           string
+	Filename      string
+	TotalLines    uint32
+	EstimatedTime uint32 // seconds
+}
+
+// ParseFileInfo parses file info query response (CommandSet 0xAC, CommandID 0x00).
+// Format: byte[0]=result, then length-prefixed md5, then length-prefixed filename.
+func ParseFileInfo(data []byte) (PrintFileInfo, error) {
+	if len(data) < 3 {
+		return PrintFileInfo{}, fmt.Errorf("file info too short")
+	}
+	if data[0] != 0 {
+		return PrintFileInfo{}, fmt.Errorf("file info query failed: code %d", data[0])
+	}
+	offset := 1
+	// MD5 (length-prefixed uint16 LE)
+	if offset+2 > len(data) {
+		return PrintFileInfo{}, fmt.Errorf("missing md5 length")
+	}
+	md5Len := int(binary.LittleEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	if offset+md5Len > len(data) {
+		return PrintFileInfo{}, fmt.Errorf("md5 truncated")
+	}
+	md5Str := string(data[offset : offset+md5Len])
+	offset += md5Len
+
+	// Filename (length-prefixed uint16 LE)
+	if offset+2 > len(data) {
+		return PrintFileInfo{}, fmt.Errorf("missing filename length")
+	}
+	nameLen := int(binary.LittleEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	if offset+nameLen > len(data) {
+		return PrintFileInfo{}, fmt.Errorf("filename truncated")
+	}
+	filename := string(data[offset : offset+nameLen])
+
+	return PrintFileInfo{MD5: md5Str, Filename: filename}, nil
+}
+
+// ParsePrintingFileInfo parses printing file info response (CommandSet 0xAC, CommandID 0x1A).
+// Format: byte[0]=result, then length-prefixed filename, uint32 total_lines, uint32 estimated_time.
+func ParsePrintingFileInfo(data []byte) (PrintFileInfo, error) {
+	if len(data) < 3 {
+		return PrintFileInfo{}, fmt.Errorf("printing file info too short")
+	}
+	if data[0] != 0 {
+		return PrintFileInfo{}, fmt.Errorf("printing file info failed: code %d", data[0])
+	}
+	offset := 1
+	// Filename (length-prefixed uint16 LE)
+	if offset+2 > len(data) {
+		return PrintFileInfo{}, fmt.Errorf("missing filename length")
+	}
+	nameLen := int(binary.LittleEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	if offset+nameLen > len(data) {
+		return PrintFileInfo{}, fmt.Errorf("filename truncated")
+	}
+	filename := string(data[offset : offset+nameLen])
+	offset += nameLen
+
+	fi := PrintFileInfo{Filename: filename}
+	if offset+4 <= len(data) {
+		fi.TotalLines = binary.LittleEndian.Uint32(data[offset : offset+4])
+		offset += 4
+	}
+	if offset+4 <= len(data) {
+		fi.EstimatedTime = binary.LittleEndian.Uint32(data[offset : offset+4])
+	}
+	return fi, nil
+}
+
 func readFloat32LE(b []byte) float32 {
 	bits := binary.LittleEndian.Uint32(b)
 	return math.Float32frombits(bits)
 }
 
-// WritePacket writes a SACP command packet and returns the sequence number used.
+// WritePacket writes a SACP command packet to the controller (ReceiverID=1).
 func WritePacket(conn net.Conn, commandSet, commandID byte, data []byte, timeout time.Duration) (uint16, error) {
+	return WritePacketTo(conn, 1, commandSet, commandID, data, timeout)
+}
+
+// WritePacketTo writes a SACP command packet to a specific receiver.
+// ReceiverID 1 = controller, 2 = screen.
+func WritePacketTo(conn net.Conn, receiverID byte, commandSet, commandID byte, data []byte, timeout time.Duration) (uint16, error) {
 	seq := nextSequence()
 	conn.SetWriteDeadline(time.Now().Add(timeout))
 	_, err := conn.Write(Packet{
-		ReceiverID: 1,
+		ReceiverID: receiverID,
 		SenderID:   0,
 		Attribute:  0,
 		Sequence:   seq,

@@ -23,6 +23,7 @@ func (po *PrinterObjects) BuildAll(state printer.StateData) map[string]interface
 		"fan":            po.Fan(state),
 		"heaters":        po.Heaters(state),
 		"display_status": po.DisplayStatus(state),
+		"gcode":          po.GCode(state),
 	}
 }
 
@@ -81,6 +82,7 @@ func (po *PrinterObjects) AvailableObjects() []string {
 		"fan",
 		"heaters",
 		"display_status",
+		"gcode",
 	}
 }
 
@@ -209,6 +211,25 @@ func (po *PrinterObjects) Heaters(state printer.StateData) map[string]interface{
 	return map[string]interface{}{
 		"available_heaters": []string{"heater_bed", "extruder", "extruder1"},
 		"available_sensors": []string{"heater_bed", "extruder", "extruder1"},
+	}
+}
+
+func (po *PrinterObjects) GCode(state printer.StateData) map[string]interface{} {
+	// Klipper's gcode object contains registered gcode commands.
+	// Mainsail uses this to check for available commands (M104, M140, M141, etc.)
+	commands := map[string]interface{}{
+		"M104": map[string]interface{}{"help": "Set extruder temperature"},
+		"M140": map[string]interface{}{"help": "Set bed temperature"},
+		"M106": map[string]interface{}{"help": "Set fan speed"},
+		"M107": map[string]interface{}{"help": "Turn off fan"},
+		"M109": map[string]interface{}{"help": "Wait for extruder temperature"},
+		"M190": map[string]interface{}{"help": "Wait for bed temperature"},
+		"G28":  map[string]interface{}{"help": "Home axes"},
+		"G0":   map[string]interface{}{"help": "Linear move"},
+		"G1":   map[string]interface{}{"help": "Linear move"},
+	}
+	return map[string]interface{}{
+		"commands": commands,
 	}
 }
 

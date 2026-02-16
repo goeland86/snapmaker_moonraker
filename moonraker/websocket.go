@@ -246,6 +246,18 @@ func (h *WSHub) handleRPC(client *WSClient, req *jsonRPCRequest) {
 	case "server.files.get_directory":
 		resp.Result = h.handleFilesGetDirectory(req.Params)
 
+	case "server.files.post_directory":
+		resp.Result = h.handleFilesPostDirectory(req.Params)
+
+	case "server.files.delete_directory":
+		resp.Result = h.handleFilesDeleteDirectory(req.Params)
+
+	case "server.files.delete_file":
+		resp.Result = h.handleFilesDeleteFile(req.Params)
+
+	case "server.files.move":
+		resp.Result = h.handleFilesMove(req.Params)
+
 	case "server.files.roots":
 		resp.Result = h.handleFilesRoots()
 
@@ -460,6 +472,153 @@ func (h *WSHub) handleFilesGetDirectory(params interface{}) interface{} {
 		root = "gcodes"
 	}
 	return h.server.fileManager.GetDirectory(root, path)
+}
+
+func (h *WSHub) handleFilesDeleteFile(params interface{}) interface{} {
+	path := extractStringParam(params, "path")
+	if path == "" {
+		return map[string]interface{}{}
+	}
+
+	// Path comes as "root/filename" (e.g., "gcodes/wecreat_test.nc").
+	root := "gcodes"
+	filePath := path
+	if strings.HasPrefix(path, "gcodes/") {
+		filePath = strings.TrimPrefix(path, "gcodes/")
+	}
+
+	if err := h.server.fileManager.DeleteFile(root, filePath); err != nil {
+		log.Printf("Delete file error: %v", err)
+		return map[string]interface{}{}
+	}
+
+	h.BroadcastNotification("notify_filelist_changed", []interface{}{
+		map[string]interface{}{
+			"action": "delete_file",
+			"item": map[string]interface{}{
+				"root": root,
+				"path": filePath,
+			},
+		},
+	})
+
+	return map[string]interface{}{
+		"item": map[string]interface{}{
+			"path": filePath,
+			"root": root,
+		},
+		"action": "delete_file",
+	}
+}
+
+func (h *WSHub) handleFilesPostDirectory(params interface{}) interface{} {
+	path := extractStringParam(params, "path")
+	if path == "" {
+		return map[string]interface{}{}
+	}
+
+	root := "gcodes"
+	dirPath := path
+	if strings.HasPrefix(path, "gcodes/") {
+		dirPath = strings.TrimPrefix(path, "gcodes/")
+	} else if path == "gcodes" {
+		dirPath = ""
+	}
+
+	if err := h.server.fileManager.CreateDirectory(root, dirPath); err != nil {
+		log.Printf("Create directory error: %v", err)
+		return map[string]interface{}{}
+	}
+
+	h.BroadcastNotification("notify_filelist_changed", []interface{}{
+		map[string]interface{}{
+			"action": "create_dir",
+			"item": map[string]interface{}{
+				"root": root,
+				"path": dirPath,
+			},
+		},
+	})
+
+	return map[string]interface{}{
+		"item": map[string]interface{}{
+			"path": dirPath,
+			"root": root,
+		},
+		"action": "create_dir",
+	}
+}
+
+func (h *WSHub) handleFilesDeleteDirectory(params interface{}) interface{} {
+	path := extractStringParam(params, "path")
+	if path == "" {
+		return map[string]interface{}{}
+	}
+
+	root := "gcodes"
+	dirPath := path
+	if strings.HasPrefix(path, "gcodes/") {
+		dirPath = strings.TrimPrefix(path, "gcodes/")
+	}
+
+	if err := h.server.fileManager.DeleteDirectory(root, dirPath); err != nil {
+		log.Printf("Delete directory error: %v", err)
+		return map[string]interface{}{}
+	}
+
+	h.BroadcastNotification("notify_filelist_changed", []interface{}{
+		map[string]interface{}{
+			"action": "delete_dir",
+			"item": map[string]interface{}{
+				"root": root,
+				"path": dirPath,
+			},
+		},
+	})
+
+	return map[string]interface{}{
+		"item": map[string]interface{}{
+			"path": dirPath,
+			"root": root,
+		},
+		"action": "delete_dir",
+	}
+}
+
+func (h *WSHub) handleFilesMove(params interface{}) interface{} {
+	source := extractStringParam(params, "source")
+	dest := extractStringParam(params, "dest")
+	if source == "" || dest == "" {
+		return map[string]interface{}{}
+	}
+
+	srcPath := h.server.fileManager.ResolvePath(source)
+	dstPath := h.server.fileManager.ResolvePath(dest)
+
+	if err := h.server.fileManager.MoveFile(srcPath, dstPath); err != nil {
+		log.Printf("Move file error: %v", err)
+		return map[string]interface{}{}
+	}
+
+	h.BroadcastNotification("notify_filelist_changed", []interface{}{
+		map[string]interface{}{
+			"action": "move_file",
+			"item": map[string]interface{}{
+				"path":        dest,
+				"root":        "gcodes",
+				"source_path": source,
+			},
+		},
+	})
+
+	return map[string]interface{}{
+		"item": map[string]interface{}{
+			"path":        dest,
+			"root":        "gcodes",
+			"source_path": source,
+		},
+		"action": "move_file",
+	}
 }
 
 func (h *WSHub) handleFilesRoots() interface{} {

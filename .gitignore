@@ -1,2 +1,5 @@
 snapmaker_moonraker
+snapmaker_moonraker-armv7
 gcodes/
+deploy.sh
+nul

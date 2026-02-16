@@ -14,6 +14,9 @@ func (s *Server) registerFileHandlers() {
 	s.mux.HandleFunc("GET /server/files/directory", s.handleFileDirectory)
 	s.mux.HandleFunc("GET /server/files/metadata", s.handleFileMetadata)
 	s.mux.HandleFunc("POST /server/files/upload", s.handleFileUpload)
+	s.mux.HandleFunc("POST /server/files/directory", s.handleCreateDirectory)
+	s.mux.HandleFunc("DELETE /server/files/directory", s.handleDeleteDirectory)
+	s.mux.HandleFunc("POST /server/files/move", s.handleFileMove)
 	s.mux.HandleFunc("DELETE /server/files/{root}/{path...}", s.handleFileDelete)
 	s.mux.HandleFunc("GET /server/files/{root}/{path...}", s.handleFileDownload)
 	s.mux.HandleFunc("GET /server/files/roots", s.handleFileRoots)
@@ -135,6 +138,151 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 				"size":     len(data),
 			},
 			"action": "create_file",
+		},
+	})
+}
+
+func (s *Server) handleCreateDirectory(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		if err := r.ParseForm(); err == nil {
+			path = r.FormValue("path")
+		}
+	}
+	if path == "" {
+		http.Error(w, "missing path parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Extract root from path (e.g., "gcodes/subdir" -> root="gcodes", dir="subdir")
+	root := "gcodes"
+	dirPath := path
+	if strings.HasPrefix(path, "gcodes/") {
+		dirPath = strings.TrimPrefix(path, "gcodes/")
+	} else if path == "gcodes" {
+		dirPath = ""
+	}
+
+	if err := s.fileManager.CreateDirectory(root, dirPath); err != nil {
+		writeJSON(w, map[string]interface{}{
+			"error": map[string]interface{}{
+				"code":    500,
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	s.wsHub.BroadcastNotification("notify_filelist_changed", []interface{}{
+		map[string]interface{}{
+			"action": "create_dir",
+			"item": map[string]interface{}{
+				"root": root,
+				"path": dirPath,
+			},
+		},
+	})
+
+	writeJSON(w, map[string]interface{}{
+		"result": map[string]interface{}{
+			"item": map[string]interface{}{
+				"path": dirPath,
+				"root": root,
+			},
+			"action": "create_dir",
+		},
+	})
+}
+
+func (s *Server) handleDeleteDirectory(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		http.Error(w, "missing path parameter", http.StatusBadRequest)
+		return
+	}
+
+	root := "gcodes"
+	dirPath := path
+	if strings.HasPrefix(path, "gcodes/") {
+		dirPath = strings.TrimPrefix(path, "gcodes/")
+	}
+
+	if err := s.fileManager.DeleteDirectory(root, dirPath); err != nil {
+		writeJSON(w, map[string]interface{}{
+			"error": map[string]interface{}{
+				"code":    404,
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	s.wsHub.BroadcastNotification("notify_filelist_changed", []interface{}{
+		map[string]interface{}{
+			"action": "delete_dir",
+			"item": map[string]interface{}{
+				"root": root,
+				"path": dirPath,
+			},
+		},
+	})
+
+	writeJSON(w, map[string]interface{}{
+		"result": map[string]interface{}{
+			"item": map[string]interface{}{
+				"path": dirPath,
+				"root": root,
+			},
+			"action": "delete_dir",
+		},
+	})
+}
+
+func (s *Server) handleFileMove(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "failed to parse form", http.StatusBadRequest)
+		return
+	}
+
+	source := r.FormValue("source")
+	dest := r.FormValue("dest")
+	if source == "" || dest == "" {
+		http.Error(w, "missing source or dest parameter", http.StatusBadRequest)
+		return
+	}
+
+	srcPath := s.fileManager.ResolvePath(source)
+	dstPath := s.fileManager.ResolvePath(dest)
+
+	if err := s.fileManager.MoveFile(srcPath, dstPath); err != nil {
+		writeJSON(w, map[string]interface{}{
+			"error": map[string]interface{}{
+				"code":    500,
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	s.wsHub.BroadcastNotification("notify_filelist_changed", []interface{}{
+		map[string]interface{}{
+			"action": "move_file",
+			"item": map[string]interface{}{
+				"path":        dest,
+				"root":        "gcodes",
+				"source_path": source,
+			},
+		},
+	})
+
+	writeJSON(w, map[string]interface{}{
+		"result": map[string]interface{}{
+			"item": map[string]interface{}{
+				"path":        dest,
+				"root":        "gcodes",
+				"source_path": source,
+			},
+			"action": "move_file",
 		},
 	})
 }

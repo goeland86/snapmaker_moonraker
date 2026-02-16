@@ -45,7 +45,7 @@ func (m *Manager) ListFiles(root string) []map[string]interface{} {
 
 		result = append(result, map[string]interface{}{
 			"path":     relPath,
-			"modified": float64(info.ModTime().Unix()),
+			"modified": float64(info.ModTime().UnixNano()) / 1e9,
 			"size":     info.Size(),
 			"permissions": "rw",
 		})
@@ -62,7 +62,16 @@ func (m *Manager) ListFiles(root string) []map[string]interface{} {
 func (m *Manager) GetDirectory(root, path string) map[string]interface{} {
 	dir := m.GetRootPath(root)
 	if path != "" && path != root {
-		dir = filepath.Join(dir, filepath.FromSlash(path))
+		// Strip root prefix if present (e.g., "gcodes/subdir" -> "subdir").
+		cleanPath := path
+		if strings.HasPrefix(cleanPath, root+"/") {
+			cleanPath = strings.TrimPrefix(cleanPath, root+"/")
+		} else if cleanPath == root {
+			cleanPath = ""
+		}
+		if cleanPath != "" {
+			dir = filepath.Join(dir, filepath.FromSlash(cleanPath))
+		}
 	}
 
 	var files []map[string]interface{}
@@ -81,14 +90,14 @@ func (m *Manager) GetDirectory(root, path string) map[string]interface{} {
 			if entry.IsDir() {
 				dirs = append(dirs, map[string]interface{}{
 					"dirname":  entry.Name(),
-					"modified": float64(info.ModTime().Unix()),
+					"modified": float64(info.ModTime().UnixNano()) / 1e9,
 					"size":     info.Size(),
 					"permissions": "rw",
 				})
 			} else {
 				files = append(files, map[string]interface{}{
-					"path":        entry.Name(),
-					"modified":    float64(info.ModTime().Unix()),
+					"filename":    entry.Name(),
+					"modified":    float64(info.ModTime().UnixNano()) / 1e9,
 					"size":        info.Size(),
 					"permissions": "rw",
 				})
@@ -119,11 +128,11 @@ func (m *Manager) GetDirectory(root, path string) map[string]interface{} {
 
 // getDiskUsage returns disk usage stats for the given path.
 func (m *Manager) getDiskUsage(path string) map[string]interface{} {
-	// Return reasonable defaults - actual disk usage requires platform-specific calls
+	total, free := diskUsage(path)
 	return map[string]interface{}{
-		"total": 0,
-		"used":  0,
-		"free":  0,
+		"total": total,
+		"used":  total - free,
+		"free":  free,
 	}
 }
 
@@ -138,7 +147,7 @@ func (m *Manager) GetMetadata(root, filename string) (map[string]interface{}, er
 	meta := map[string]interface{}{
 		"filename":       filename,
 		"size":           info.Size(),
-		"modified":       float64(info.ModTime().Unix()),
+		"modified":       float64(info.ModTime().UnixNano()) / 1e9,
 		"print_start_time": nil,
 		"job_id":         nil,
 		"slicer":         "",
@@ -174,6 +183,42 @@ func (m *Manager) SaveFile(root, filename string, data []byte) error {
 func (m *Manager) ReadFile(root, filename string) ([]byte, error) {
 	path := filepath.Join(m.GetRootPath(root), filepath.FromSlash(filename))
 	return os.ReadFile(path)
+}
+
+// CreateDirectory creates a directory within a root.
+func (m *Manager) CreateDirectory(root, dirPath string) error {
+	path := filepath.Join(m.GetRootPath(root), filepath.FromSlash(dirPath))
+	return os.MkdirAll(path, 0755)
+}
+
+// DeleteDirectory removes an empty directory within a root.
+func (m *Manager) DeleteDirectory(root, dirPath string) error {
+	path := filepath.Join(m.GetRootPath(root), filepath.FromSlash(dirPath))
+
+	absRoot, _ := filepath.Abs(m.GetRootPath(root))
+	absPath, _ := filepath.Abs(path)
+	if !strings.HasPrefix(absPath, absRoot) {
+		return fmt.Errorf("invalid path: %s", dirPath)
+	}
+
+	return os.Remove(path)
+}
+
+// MoveFile moves/renames a file or directory.
+func (m *Manager) MoveFile(source, dest string) error {
+	return os.Rename(source, dest)
+}
+
+// ResolvePath resolves a root/path pair to an absolute filesystem path.
+func (m *Manager) ResolvePath(rootAndPath string) string {
+	// Moonraker paths look like "gcodes/subdir/file.gcode"
+	parts := strings.SplitN(rootAndPath, "/", 2)
+	root := parts[0]
+	path := ""
+	if len(parts) > 1 {
+		path = parts[1]
+	}
+	return filepath.Join(m.GetRootPath(root), filepath.FromSlash(path))
 }
 
 // DeleteFile removes a file from storage.

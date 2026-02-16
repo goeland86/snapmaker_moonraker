@@ -255,6 +255,18 @@ func (h *WSHub) handleRPC(client *WSClient, req *jsonRPCRequest) {
 	case "machine.proc_stats":
 		resp.Result = h.server.machineProcStats()
 
+	case "machine.services.list":
+		resp.Result = h.server.machineServicesList()
+
+	case "machine.services.restart":
+		resp.Result = h.handleMachineServiceAction("restart", req.Params)
+
+	case "machine.services.stop":
+		resp.Result = h.handleMachineServiceAction("stop", req.Params)
+
+	case "machine.services.start":
+		resp.Result = h.handleMachineServiceAction("start", req.Params)
+
 	case "server.temperature_store":
 		resp.Result = h.server.temperatureStore()
 
@@ -465,6 +477,15 @@ func (h *WSHub) handleAnnouncementsList() interface{} {
 		"entries": []interface{}{},
 		"feeds":   []interface{}{},
 	}
+}
+
+func (h *WSHub) handleMachineServiceAction(action string, params interface{}) interface{} {
+	service := extractStringParam(params, "service")
+	if err := machineServiceAction(action, service); err != nil {
+		log.Printf("Service %s error: %v", action, err)
+		return map[string]interface{}{"error": err.Error()}
+	}
+	return "ok"
 }
 
 func (h *WSHub) handleAnnouncementsUpdate() interface{} {

@@ -9,4 +9,4 @@ printer:
   poll_interval: 5
 
 files:
-  gcode_dir: "/home/pi/gcodes"
+  gcode_dir: "/home/pi/printer_data/gcodes"

@@ -161,10 +161,10 @@ cp -v "${SCRIPT_DIR}/rootfs/home/pi/printer_data/config/crowsnest.conf" \
     "${ROOT_MNT}/home/pi/printer_data/config/crowsnest.conf"
 
 # Create gcode directory
-mkdir -p "${ROOT_MNT}/home/pi/gcodes"
+mkdir -p "${ROOT_MNT}/home/pi/printer_data/gcodes"
 
 # Fix ownership (pi user is UID 1000 on RPi OS)
-chown -R 1000:1000 "${ROOT_MNT}/home/pi/.snapmaker" "${ROOT_MNT}/home/pi/gcodes" \
+chown -R 1000:1000 "${ROOT_MNT}/home/pi/.snapmaker" \
     "${ROOT_MNT}/home/pi/printer_data"
 
 # --- Step 9: Cleanup chroot mounts ---

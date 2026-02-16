@@ -2,8 +2,12 @@ package moonraker
 
 import (
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
+	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -18,6 +22,10 @@ func (s *Server) registerServerHandlers() {
 	s.mux.HandleFunc("GET /server/webcams/list", s.handleWebcamsList)
 	s.mux.HandleFunc("GET /machine/system_info", s.handleMachineSystemInfo)
 	s.mux.HandleFunc("GET /machine/proc_stats", s.handleMachineProcStats)
+	s.mux.HandleFunc("GET /machine/services/list", s.handleMachineServicesList)
+	s.mux.HandleFunc("POST /machine/services/restart", s.handleMachineServiceRestart)
+	s.mux.HandleFunc("POST /machine/services/stop", s.handleMachineServiceStop)
+	s.mux.HandleFunc("POST /machine/services/start", s.handleMachineServiceStart)
 }
 
 func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
@@ -165,13 +173,36 @@ func (s *Server) machineSystemInfo() map[string]interface{} {
 				"virt_type":       "none",
 				"virt_identifier": "none",
 			},
-			"network": map[string]interface{}{},
-			"canbus":  map[string]interface{}{},
-			"python":  map[string]interface{}{
+			"network":            map[string]interface{}{},
+			"canbus":             map[string]interface{}{},
+			"python":             map[string]interface{}{
 				"version": []int{0, 0, 0},
 			},
+			"available_services": allowedServices,
+			"service_state":      getServiceStates(),
 		},
 	}
+}
+
+// getServiceStates queries systemd for the active/sub state of each allowed service.
+func getServiceStates() map[string]interface{} {
+	states := make(map[string]interface{})
+	for _, svc := range allowedServices {
+		active := "inactive"
+		sub := "dead"
+		if out, err := exec.Command("systemctl", "show", "-p", "ActiveState,SubState", "--value", svc).Output(); err == nil {
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			if len(lines) >= 2 {
+				active = strings.TrimSpace(lines[0])
+				sub = strings.TrimSpace(lines[1])
+			}
+		}
+		states[svc] = map[string]interface{}{
+			"active_state": active,
+			"sub_state":    sub,
+		}
+	}
+	return states
 }
 
 func (s *Server) handleMachineProcStats(w http.ResponseWriter, r *http.Request) {
@@ -239,6 +270,92 @@ func (s *Server) getWebcamsList() map[string]interface{} {
 			},
 		},
 	}
+}
+
+// allowedServices defines services that can be controlled from Mainsail's
+// power menu, mimicking Moonraker's moonraker.asvc file.
+var allowedServices = []string{
+	"crowsnest",
+	"moonraker-obico",
+}
+
+func (s *Server) handleMachineServicesList(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]interface{}{
+		"result": s.machineServicesList(),
+	})
+}
+
+func (s *Server) machineServicesList() map[string]interface{} {
+	return map[string]interface{}{
+		"services": allowedServices,
+	}
+}
+
+func (s *Server) handleMachineServiceRestart(w http.ResponseWriter, r *http.Request) {
+	service := r.URL.Query().Get("service")
+	if err := machineServiceAction("restart", service); err != nil {
+		writeJSON(w, map[string]interface{}{
+			"error": map[string]interface{}{
+				"code":    400,
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+	writeJSON(w, map[string]interface{}{"result": "ok"})
+}
+
+func (s *Server) handleMachineServiceStop(w http.ResponseWriter, r *http.Request) {
+	service := r.URL.Query().Get("service")
+	if err := machineServiceAction("stop", service); err != nil {
+		writeJSON(w, map[string]interface{}{
+			"error": map[string]interface{}{
+				"code":    400,
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+	writeJSON(w, map[string]interface{}{"result": "ok"})
+}
+
+func (s *Server) handleMachineServiceStart(w http.ResponseWriter, r *http.Request) {
+	service := r.URL.Query().Get("service")
+	if err := machineServiceAction("start", service); err != nil {
+		writeJSON(w, map[string]interface{}{
+			"error": map[string]interface{}{
+				"code":    400,
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+	writeJSON(w, map[string]interface{}{"result": "ok"})
+}
+
+// machineServiceAction executes a systemctl action on an allowed service.
+func machineServiceAction(action, service string) error {
+	if service == "" {
+		return fmt.Errorf("missing service parameter")
+	}
+
+	allowed := false
+	for _, s := range allowedServices {
+		if s == service {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return fmt.Errorf("service %q is not allowed", service)
+	}
+
+	log.Printf("Service %s: %s", action, service)
+	cmd := exec.Command("sudo", "systemctl", action, service)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl %s %s failed: %s (%w)", action, service, strings.TrimSpace(string(out)), err)
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {

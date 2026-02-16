@@ -1,0 +1,16 @@
+#Systemd service file for moonraker-obico
+[Unit]
+Description=Moonraker-Obico
+After=network-online.target snapmaker-moonraker.service
+Wants=network-online.target
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/moonraker-obico
+ExecStart=/home/pi/moonraker-obico-env/bin/python3 -m moonraker_obico.app -c /home/pi/printer_data/config/moonraker-obico.cfg
+Restart=always
+RestartSec=5

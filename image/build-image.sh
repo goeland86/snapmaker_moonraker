@@ -117,6 +117,8 @@ cp -v "${SCRIPT_DIR}/rootfs/etc/systemd/system/snapmaker-moonraker.service" \
     "${ROOT_MNT}/etc/systemd/system/snapmaker-moonraker.service"
 cp -v "${SCRIPT_DIR}/rootfs/etc/systemd/system/crowsnest.service" \
     "${ROOT_MNT}/etc/systemd/system/crowsnest.service"
+cp -v "${SCRIPT_DIR}/rootfs/etc/systemd/system/moonraker-obico.service" \
+    "${ROOT_MNT}/etc/systemd/system/moonraker-obico.service"
 
 # --- Step 6: Run chroot install script ---
 echo "==> Running chroot install script..."
@@ -142,6 +144,8 @@ cp -v "${SCRIPT_DIR}/rootfs/etc/systemd/system/snapmaker-moonraker.service" \
     "${ROOT_MNT}/etc/systemd/system/snapmaker-moonraker.service"
 cp -v "${SCRIPT_DIR}/rootfs/etc/systemd/system/crowsnest.service" \
     "${ROOT_MNT}/etc/systemd/system/crowsnest.service"
+cp -v "${SCRIPT_DIR}/rootfs/etc/systemd/system/moonraker-obico.service" \
+    "${ROOT_MNT}/etc/systemd/system/moonraker-obico.service"
 
 cp -v "${SCRIPT_DIR}/rootfs/etc/hostname" "${ROOT_MNT}/etc/hostname"
 

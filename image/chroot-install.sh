@@ -12,7 +12,8 @@ apt-get update -qq
 echo "==> [chroot] Installing nginx and build dependencies..."
 apt-get install -y -qq --no-install-recommends \
     nginx unzip \
-    git make gcc libc6-dev libjpeg62-turbo-dev libevent-dev libbsd-dev v4l-utils crudini xxd
+    git make gcc libc6-dev libjpeg62-turbo-dev libevent-dev libbsd-dev v4l-utils crudini xxd \
+    python3 python3-pip python3-virtualenv ffmpeg
 
 echo "==> [chroot] Downloading Mainsail..."
 MAINSAIL_URL=$(wget -qO- https://api.github.com/repos/mainsail-crew/mainsail/releases/latest \
@@ -36,6 +37,12 @@ fi
 chown -R 1000:1000 /home/pi/crowsnest
 cd /
 
+echo "==> [chroot] Installing moonraker-obico..."
+git clone --depth 1 https://github.com/TheSpaghettiDetective/moonraker-obico.git /home/pi/moonraker-obico
+python3 -m virtualenv --system-site-packages /home/pi/moonraker-obico-env
+/home/pi/moonraker-obico-env/bin/pip3 install -q -r /home/pi/moonraker-obico/requirements.txt
+chown -R 1000:1000 /home/pi/moonraker-obico /home/pi/moonraker-obico-env
+
 echo "==> [chroot] Creating printer_data directories..."
 mkdir -p /home/pi/printer_data/{config,logs,systemd}
 
@@ -43,6 +50,7 @@ echo "==> [chroot] Enabling services..."
 systemctl enable nginx
 systemctl enable snapmaker-moonraker
 systemctl enable crowsnest
+systemctl enable moonraker-obico
 
 echo "==> [chroot] Setting hostname..."
 echo "snapmaker" > /etc/hostname

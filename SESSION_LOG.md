@@ -772,3 +772,84 @@ Moonraker-obico was installed in the RPi image but had never successfully connec
 - Print progress percentage stuck at 0% (J1S doesn't provide total_lines via SACP for touchscreen prints)
 - Auto-discovery not working (deferred — using static IP for now)
 - SACP initial connect sometimes times out (10s) but auto-reconnect recovers
+
+---
+
+## Session 9 - 2026-02-17: Obico Video Streaming, Mainsail Version Fix, GCode Commands
+
+### Objective
+Troubleshoot Obico video streaming issues, suppress Mainsail's "Update Klipper" version warning, and expand the gcode.commands object for console autocomplete.
+
+### Obico Video Streaming Investigation
+
+**Problem:** Obico server shows a single static image with a spinning loader — no live stream.
+
+**Investigation:**
+- Confirmed webcam hardware works: `curl http://127.0.0.1:8080/?action=snapshot` returns 69KB JPEG
+- Crowsnest + ustreamer running correctly on port 8080
+- Checked Cloudflare proxy — already set to DNS-only (not proxied), ruled out as cause
+- Tried changing webcam URLs in moonraker config to absolute `http://127.0.0.1:8080` paths — this broke Mainsail's webcam (browser can't reach Pi's localhost). Reverted.
+- Configured obico's own `moonraker-obico.cfg` with explicit webcam URLs instead:
+  ```ini
+  [webcam]
+  snapshot_url = http://127.0.0.1:8080/?action=snapshot
+  stream_url = http://127.0.0.1:8080/?action=stream
+  ```
+- Still not updating → tried `disable_video_streaming = True` to force snapshot-only mode
+- Enabled DEBUG logging in obico, ran manually to capture output
+- **Key finding**: JPEG snapshots ARE posting successfully every ~5s (POST `/api/v1/octo/pic/` → 200 OK), but Janus WebRTC sessions are stale ("No such session" errors)
+- Disabled Janus binary (`chmod -x`) to force pure snapshot mode
+- **Result**: Snapshots post OK but Obico UI only updates on full page refresh — appears to be server-side UI behavior preferring broken WebRTC stream over available snapshots
+
+**Status:** Unresolved — likely requires Obico server-side configuration or update. Snapshots are successfully posting.
+
+### Mainsail Version Warning Fix
+
+**Problem:** Mainsail shows "The current Klipper version does not support all features of Mainsail. Update Klipper to at least v0.11.0-257."
+
+**Research:**
+- Mainsail checks `software_version` from `/printer/info` against `minKlipperVersion = 'v0.11.0-257'`
+- Our `v0.1.0-snapmaker` failed the semver comparison
+- The check is purely cosmetic — no features are actually disabled
+- Features that Klipper v0.11.0-257 introduced: `SET_PRINT_STATS_INFO` (layer tracking) and `gcode.commands` object
+
+**Fix:** Bumped `software_version` to `"v0.13.0-snapmaker_moonraker"` in `handler_printer.go`
+
+### GCode Commands Expansion
+
+Expanded `gcode.commands` in `objects.go` from 9 to 25+ commands for Mainsail console autocomplete and feature detection:
+
+- **Temperature**: M104, M109, M140, M190
+- **Fan**: M106, M107
+- **Movement**: G0, G1, G28, G90, G91, G92
+- **Print control**: M24, M25, M26
+- **Emergency**: M112
+- **Status**: M105, M114, M220, M221
+- **Klipper-style**: FIRMWARE_RESTART, RESTART, SET_HEATER_TEMPERATURE, TURN_OFF_HEATERS, SET_FAN_SPEED, CANCEL_PRINT, PAUSE, RESUME
+
+### Service Management API
+
+Added machine service management endpoints for Mainsail's power menu:
+
+- `GET /machine/services/list` — Returns list of allowed services
+- `POST /machine/services/restart` — Restart a service via `sudo systemctl restart`
+- `POST /machine/services/stop` — Stop a service
+- `POST /machine/services/start` — Start a service
+- Service allowlist: `crowsnest`, `moonraker-obico` (mimics Moonraker's `moonraker.asvc`)
+- Added `getServiceStates()` to `/machine/system_info` for live service status
+
+### Files Modified
+- `moonraker/handler_printer.go` — Version bump to `v0.13.0-snapmaker_moonraker`
+- `moonraker/objects.go` — Expanded gcode.commands from 9 to 25+ commands
+- `moonraker/handler_server.go` — Added service management endpoints, service states in system_info
+- Pi config `moonraker-obico.cfg` — Explicit webcam URLs, disable_video_streaming
+
+### Git
+- `dbb1c28` "Fix ustreamer build: add missing libbsd-dev dependency"
+- Previous commits include crowsnest webcam streaming setup
+
+### Pending
+- Deploy latest binary to Pi (was offline at end of session)
+- Obico video streaming still not auto-refreshing (server-side issue)
+- Janus binary disabled on Pi — may need re-enabling if WebRTC fixed
+- Obico DEBUG logging left on — should revert to INFO for production

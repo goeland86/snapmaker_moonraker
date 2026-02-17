@@ -60,7 +60,7 @@ func (s *Server) handleDatabaseGetItem(w http.ResponseWriter, r *http.Request) {
 			"result": map[string]interface{}{
 				"namespace": namespace,
 				"key":       key,
-				"value":     nil,
+				"value":     map[string]interface{}{},
 			},
 		})
 		return
@@ -76,49 +76,63 @@ func (s *Server) handleDatabaseGetItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDatabasePostItem(w http.ResponseWriter, r *http.Request) {
-	namespace := r.URL.Query().Get("namespace")
+	var namespace, key string
+	var value interface{}
+
+	contentType := r.Header.Get("Content-Type")
+
+	if strings.HasPrefix(contentType, "application/json") {
+		// JSON body
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "failed to read request body")
+			return
+		}
+		var req struct {
+			Namespace string      `json:"namespace"`
+			Key       string      `json:"key"`
+			Value     interface{} `json:"value"`
+		}
+		if len(body) > 0 {
+			json.Unmarshal(body, &req)
+		}
+		namespace = req.Namespace
+		key = req.Key
+		value = req.Value
+	} else {
+		// Form-encoded body (used by moonraker-obico)
+		r.ParseForm()
+		namespace = r.FormValue("namespace")
+		key = r.FormValue("key")
+		if v := r.FormValue("value"); v != "" {
+			// Try to parse as JSON, fall back to string
+			var parsed interface{}
+			if err := json.Unmarshal([]byte(v), &parsed); err == nil {
+				value = parsed
+			} else {
+				value = v
+			}
+		}
+	}
+
+	// Query params override body values
+	if v := r.URL.Query().Get("namespace"); v != "" {
+		namespace = v
+	}
+	if v := r.URL.Query().Get("key"); v != "" {
+		key = v
+	}
+
 	if namespace == "" {
 		writeJSONError(w, http.StatusBadRequest, "namespace is required")
 		return
 	}
-
-	// Parse request body
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "failed to read request body")
-		return
-	}
-
-	var req struct {
-		Key   string      `json:"key"`
-		Value interface{} `json:"value"`
-	}
-
-	// Try to parse as JSON
-	if len(body) > 0 {
-		if err := json.Unmarshal(body, &req); err != nil {
-			// Check if key is in query params
-			req.Key = r.URL.Query().Get("key")
-			// Try to parse body as just the value
-			var value interface{}
-			if err := json.Unmarshal(body, &value); err == nil {
-				req.Value = value
-			}
-		}
-	} else {
-		req.Key = r.URL.Query().Get("key")
-		// No body, check for value in query (less common)
-		if v := r.URL.Query().Get("value"); v != "" {
-			req.Value = v
-		}
-	}
-
-	if req.Key == "" {
+	if key == "" {
 		writeJSONError(w, http.StatusBadRequest, "key is required")
 		return
 	}
 
-	if err := s.database.SetItem(namespace, req.Key, req.Value); err != nil {
+	if err := s.database.SetItem(namespace, key, value); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -126,8 +140,8 @@ func (s *Server) handleDatabasePostItem(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, map[string]interface{}{
 		"result": map[string]interface{}{
 			"namespace": namespace,
-			"key":       req.Key,
-			"value":     req.Value,
+			"key":       key,
+			"value":     value,
 		},
 	})
 }

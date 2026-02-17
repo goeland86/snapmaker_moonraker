@@ -201,6 +201,9 @@ func (h *WSHub) handleRPC(client *WSClient, req *jsonRPCRequest) {
 			"connection_id": 1,
 		}
 
+	case "connection.register_remote_method":
+		resp.Result = "ok"
+
 	case "printer.info":
 		resp.Result = h.server.printerInfo()
 

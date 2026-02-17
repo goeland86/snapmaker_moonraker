@@ -89,11 +89,18 @@ func (s *Server) registerRoutes() {
 	// Root access endpoint (some frontends check this).
 	s.mux.HandleFunc("GET /{$}", s.handleRoot)
 	s.mux.HandleFunc("GET /access/info", s.handleAccessInfo)
+	s.mux.HandleFunc("GET /access/api_key", s.handleAccessAPIKey)
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{
 		"result": "Snapmaker Moonraker Bridge",
+	})
+}
+
+func (s *Server) handleAccessAPIKey(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]interface{}{
+		"result": "snapmaker-moonraker-api-key",
 	})
 }
 

@@ -11,6 +11,7 @@ WantedBy=multi-user.target
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/moonraker-obico
+Environment=PYTHONPATH=/home/pi/moonraker-obico
 ExecStart=/home/pi/moonraker-obico-env/bin/python3 -m moonraker_obico.app -c /home/pi/printer_data/config/moonraker-obico.cfg
 Restart=always
 RestartSec=5

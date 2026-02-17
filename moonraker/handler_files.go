@@ -64,10 +64,13 @@ func (s *Server) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
 
 	meta, err := s.fileManager.GetMetadata("gcodes", filename)
 	if err != nil {
+		// Return minimal metadata stub for files not in local storage
+		// (e.g. prints started from the printer's touchscreen).
 		writeJSON(w, map[string]interface{}{
-			"error": map[string]interface{}{
-				"code":    404,
-				"message": err.Error(),
+			"result": map[string]interface{}{
+				"filename": filename,
+				"size":     0,
+				"modified": 0,
 			},
 		})
 		return

@@ -26,6 +26,7 @@ func (s *Server) registerServerHandlers() {
 	s.mux.HandleFunc("POST /machine/services/restart", s.handleMachineServiceRestart)
 	s.mux.HandleFunc("POST /machine/services/stop", s.handleMachineServiceStop)
 	s.mux.HandleFunc("POST /machine/services/start", s.handleMachineServiceStart)
+	s.mux.HandleFunc("GET /machine/update/status", s.handleMachineUpdateStatus)
 }
 
 func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
@@ -356,6 +357,18 @@ func machineServiceAction(action, service string) error {
 		return fmt.Errorf("systemctl %s %s failed: %s (%w)", action, service, strings.TrimSpace(string(out)), err)
 	}
 	return nil
+}
+
+func (s *Server) handleMachineUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]interface{}{
+		"result": map[string]interface{}{
+			"busy":         false,
+			"github_rate_limit":  nil,
+			"github_requests_remaining": nil,
+			"github_limit_reset_time":   nil,
+			"version_info": map[string]interface{}{},
+		},
+	})
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {

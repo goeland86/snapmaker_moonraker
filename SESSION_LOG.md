@@ -594,3 +594,181 @@ Changed the SACP connect handshake identifier from `sm2uploader` to `Moonraker R
 
 ### Verification
 - `go build ./...` compiles clean
+
+---
+
+## Session 7 - 2026-02-13/17: SACP Subscription-Based Status & Image Build Fixes
+
+### Objective
+Replace the non-functional HTTP status polling with SACP subscription-based status tracking so Mainsail correctly shows print state, progress, filename, fan speed, position, and homed axes. Also fix the RPi image build failures.
+
+### Background
+Port scanning the J1S revealed only SACP port 8888 is open — **no HTTP API** (port 8080 is closed). The entire Session 6 approach of calling `getStatusHTTP()` was wrong. Required a complete reimplementation using SACP subscriptions.
+
+### Research: SACP Status Commands
+
+Researched SnapmakerController-IDEX firmware, Luban source, and sm2uploader to find SACP status commands:
+
+**SACP Subscription Mechanism:**
+- Subscribe via CommandSet=0x01, CommandID=0x00 with payload `[target_cmdset, target_cmdid, interval_lo, interval_hi]`
+- Firmware periodically sends push packets with the target command set/ID
+
+**Machine Status (0x01/0xA0 heartbeat):**
+- 11 states: IDLE(0), STARTING(1), PRINTING(2), PAUSING(3), PAUSED(4), STOPPING(5), STOPPED(6), FINISHING(7), COMPLETED(8), RECOVERING(9), RESUMING(10)
+
+**Other commands:**
+- 0xAC/0xA0: Current print line number (uint32 LE)
+- 0xAC/0xA5: Elapsed print time in seconds (uint32 LE)
+- 0x10/0xA3: Fan info (head_id, fan_count, [fan_index, fan_type, speed])
+- 0x01/0x30: XYZ coordinates (axis_id + position_um as int32 LE, ÷1000 for mm)
+- 0xAC/0x00: File info from controller (MD5 + filename, length-prefixed)
+- 0xAC/0x1A: Printing file info from screen MCU (filename + total_lines + estimated_time)
+
+**Peer IDs:** ReceiverID 1=controller, 2=screen MCU (both accessible via same TCP connection)
+
+### What Was Done
+
+#### `sacp/sacp.go` — Major additions
+
+New types and parsers:
+- `MachineStatus` type with 11 states and `String()` method
+- `ParseHeartbeat()` — parses 2-byte heartbeat data
+- `ParseCurrentLine()` — parses 5-byte current line data (uint32 LE)
+- `ParsePrintTime()` — parses 5-byte elapsed time data (uint32 LE)
+- `FanData` struct and `ParseFanInfo()` — parses fan subscription data
+- `CoordinateData` struct and `ParseCoordinateInfo()` — parses coordinate data (int32 LE microns)
+- `PrintFileInfo` struct, `ParseFileInfo()` and `ParsePrintingFileInfo()`
+- `WritePacketTo()` — sends to specific receiver IDs (controller=1, screen=2)
+- Refactored `WritePacket()` to delegate to `WritePacketTo(conn, 1, ...)`
+
+#### `printer/client.go` — Complete rewrite
+
+New client fields: `machineStatus`, `currentLine`, `totalLines`, `printTime`, `printFilename`, `fanData`, `coordData`
+
+**Key changes:**
+- `Connect()` now calls `go c.setupSubscriptions()` instead of HTTP connect
+- `setupSubscriptions()` queries temps, then subscribes to heartbeat, current line, print time, fan info via 0x01/0x00, then one-shot coordinate query
+- `subscribeTo(targetCmdSet, targetCmdID, intervalMs)` sends subscription request
+- `queryCoordinates()` one-shot query to 0x01/0x30
+- `queryFileInfo()` queries 0xAC/0x00 from controller, then tries 0xAC/0x1A from screen MCU
+- `handleSubscription()` expanded with cases for all new command types
+- On heartbeat PRINTING transition: triggers `go c.queryFileInfo()`
+- On IDLE/COMPLETED/STOPPED: clears all print data fields
+- `GetStatus()` builds entirely from cached SACP subscription data (no HTTP at all)
+- `handleDisconnect()` resets all new fields
+- `Upload()` calls `setupSubscriptions()` after router restart
+
+#### `printer/state.go` — Homed axes mapping
+- Added `if v, ok := status["homed"].(bool); ok && v { sp.state.data.HomedAxes = "xyz" }`
+
+#### `printer/http.go` — Deleted
+- Removed entirely (`git rm`) — printer has no HTTP API
+
+#### `image/chroot-install.sh` — Build dependency fixes
+- Added `cmake` and `g++` to apt-get install (fixes camera-streamer build: "cmake: not found")
+
+#### `image/build-image.sh` — Disk space fix
+- Increased image expansion from 512MB to 1536MB (fixes "No space left on device" when cloning moonraker-obico)
+
+### Live Verification (with active print)
+
+Deployed to Pi with a print in progress:
+- `print_stats.state = "printing"` ✅
+- `print_stats.filename = "SealPROTO  Thickness05 0.5_1769091299430.gcode"` ✅
+- `print_stats.print_duration = 5277` ✅
+- `fan.speed = 0.4` ✅
+- `toolhead.position = [226.729, 149.531, 2.04, 0]` ✅
+- `toolhead.homed_axes = "xyz"` ✅
+- State transitions verified: `IDLE -> PRINTING -> STOPPING -> IDLE` ✅
+
+### Known Limitation
+- Progress stays at 0% — screen MCU query (0xAC/0x1A) times out on J1S for touchscreen-initiated prints, so `totalLines` is unavailable for percentage calculation
+
+### Git
+- `b91769b` "Replace HTTP status polling with SACP subscriptions, fix image build"
+- Tag `v0.0.5` moved to this commit
+
+---
+
+## Session 8 - 2026-02-17: Moonraker-Obico Compatibility Fixes
+
+### Objective
+Get moonraker-obico fully working with the bridge so the printer appears online in a self-hosted Obico server for AI-powered print failure detection.
+
+### Background
+Moonraker-obico was installed in the RPi image but had never successfully connected. Multiple issues were discovered and fixed iteratively.
+
+### Issues Found & Fixed
+
+#### 1. Obico config pointing to wrong server
+- Default config had `url = https://app.obico.io` (cloud service)
+- Updated to user's self-hosted server: `url = https://monitor.3detplus.ch`
+
+#### 2. PYTHONPATH missing in systemd service
+- `moonraker_obico` module not found — the Python package is at `/home/pi/moonraker-obico/moonraker_obico/` but nothing added the parent to `sys.path`
+- Fixed: Added `Environment=PYTHONPATH=/home/pi/moonraker-obico` to service file
+
+#### 3. Missing `/access/api_key` endpoint
+- Obico calls `GET /access/api_key` to get an API key for WebSocket authentication
+- The `@backoff.on_exception` decorator retried infinitely on 404, silently blocking startup
+- Fixed: Added endpoint returning a static API key string
+
+#### 4. Missing `/machine/update/status` endpoint
+- Obico calls this to find installed plugins
+- 404 plain text response caused `resp.json()` to crash
+- Fixed: Added endpoint returning empty version_info
+
+#### 5. Missing `connection.register_remote_method` WebSocket RPC
+- Obico registers a remote method `obico_remote_event` after connecting
+- Fixed: Added stub returning `"ok"`
+
+#### 6. Database POST not accepting form-encoded data
+- Obico uses `requests.post(url, data=params)` which sends form-encoded data
+- Our handler only parsed JSON bodies and query params for namespace
+- Fixed: Rewrote `handleDatabasePostItem()` to detect Content-Type and parse both `application/json` and form-encoded bodies, with query params as override
+
+#### 7. Database returning `null` for missing keys
+- `"value": null` in JSON → Python's `data.get('value', {})` returns `None` (key exists with null value) instead of default `{}`
+- Obico then crashes on `.get('presets', {}).values()`
+- Fixed: Return empty object `{}` instead of `null` for missing database keys
+
+#### 8. File metadata returning 404 for touchscreen prints
+- Obico queries metadata for the currently printing file
+- Files started from the touchscreen don't exist in local storage → 404 error
+- Obico crashes on `file_metadata['size']` when metadata is `None`
+- Fixed: Return minimal metadata stub (`filename`, `size: 0`, `modified: 0`) instead of 404
+
+### Files Modified
+- `moonraker/server.go` — Added `/access/api_key` endpoint
+- `moonraker/handler_server.go` — Added `/machine/update/status` endpoint
+- `moonraker/websocket.go` — Added `connection.register_remote_method` RPC stub
+- `moonraker/handler_database.go` — Form-encoded POST support, null→empty object for missing keys
+- `moonraker/handler_files.go` — Metadata stub for missing files
+- `image/rootfs/etc/systemd/system/moonraker-obico.service` — Added PYTHONPATH
+
+### Verification
+- Obico process running with Janus WebRTC streamer spawned ✅
+- No errors in moonraker-obico log ✅
+- Printer visible and online in self-hosted Obico server ✅
+
+### Git
+- `662c9c1` "Fix moonraker-obico compatibility: add missing API endpoints and fixes"
+
+---
+
+## Updated Status
+
+### Working Features
+- Real-time temperature monitoring (SACP binary protocol)
+- Print status tracking via SACP subscriptions (state, filename, elapsed time, fan, position)
+- Mainsail dashboard with live data
+- File upload and print start from Mainsail
+- Pause/resume/cancel from Mainsail
+- Crowsnest webcam streaming
+- Moonraker-obico AI print failure detection
+- Jenkins CI image build pipeline
+
+### Known Limitations
+- Print progress percentage stuck at 0% (J1S doesn't provide total_lines via SACP for touchscreen prints)
+- Auto-discovery not working (deferred — using static IP for now)
+- SACP initial connect sometimes times out (10s) but auto-reconnect recovers

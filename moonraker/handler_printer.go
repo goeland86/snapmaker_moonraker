@@ -42,7 +42,7 @@ func (s *Server) printerInfo() map[string]interface{} {
 		"state":            state,
 		"state_message":    msg,
 		"hostname":         "snapmaker-moonraker",
-		"software_version": "v0.1.0-snapmaker",
+		"software_version": "v0.13.0-snapmaker_moonraker",
 		"cpu_info":         "Snapmaker Moonraker Bridge",
 		"klipper_path":     "/opt/snapmaker_moonraker",
 		"python_path":      "",

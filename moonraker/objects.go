@@ -216,17 +216,43 @@ func (po *PrinterObjects) Heaters(state printer.StateData) map[string]interface{
 
 func (po *PrinterObjects) GCode(state printer.StateData) map[string]interface{} {
 	// Klipper's gcode object contains registered gcode commands.
-	// Mainsail uses this to check for available commands (M104, M140, M141, etc.)
+	// Mainsail uses this for console autocomplete and feature detection.
 	commands := map[string]interface{}{
+		// Temperature control
 		"M104": map[string]interface{}{"help": "Set extruder temperature"},
+		"M109": map[string]interface{}{"help": "Wait for extruder temperature"},
 		"M140": map[string]interface{}{"help": "Set bed temperature"},
+		"M190": map[string]interface{}{"help": "Wait for bed temperature"},
+		// Fan control
 		"M106": map[string]interface{}{"help": "Set fan speed"},
 		"M107": map[string]interface{}{"help": "Turn off fan"},
-		"M109": map[string]interface{}{"help": "Wait for extruder temperature"},
-		"M190": map[string]interface{}{"help": "Wait for bed temperature"},
-		"G28":  map[string]interface{}{"help": "Home axes"},
-		"G0":   map[string]interface{}{"help": "Linear move"},
-		"G1":   map[string]interface{}{"help": "Linear move"},
+		// Movement
+		"G0":  map[string]interface{}{"help": "Linear move (rapid)"},
+		"G1":  map[string]interface{}{"help": "Linear move"},
+		"G28": map[string]interface{}{"help": "Home axes"},
+		"G90": map[string]interface{}{"help": "Absolute positioning"},
+		"G91": map[string]interface{}{"help": "Relative positioning"},
+		"G92": map[string]interface{}{"help": "Set position"},
+		// Print control
+		"M24": map[string]interface{}{"help": "Resume print"},
+		"M25": map[string]interface{}{"help": "Pause print"},
+		"M26": map[string]interface{}{"help": "Cancel print"},
+		// Emergency
+		"M112": map[string]interface{}{"help": "Emergency stop"},
+		// Misc
+		"M105": map[string]interface{}{"help": "Report temperatures"},
+		"M114": map[string]interface{}{"help": "Report current position"},
+		"M220": map[string]interface{}{"help": "Set speed factor (S<percent>)"},
+		"M221": map[string]interface{}{"help": "Set extrude factor (S<percent>)"},
+		// Klipper-style commands Mainsail may look for
+		"FIRMWARE_RESTART":       map[string]interface{}{"help": "Restart firmware"},
+		"RESTART":                map[string]interface{}{"help": "Restart host software"},
+		"SET_HEATER_TEMPERATURE": map[string]interface{}{"help": "Set heater temperature"},
+		"TURN_OFF_HEATERS":       map[string]interface{}{"help": "Turn off all heaters"},
+		"SET_FAN_SPEED":          map[string]interface{}{"help": "Set fan speed"},
+		"CANCEL_PRINT":           map[string]interface{}{"help": "Cancel current print"},
+		"PAUSE":                  map[string]interface{}{"help": "Pause current print"},
+		"RESUME":                 map[string]interface{}{"help": "Resume current print"},
 	}
 	return map[string]interface{}{
 		"commands": commands,

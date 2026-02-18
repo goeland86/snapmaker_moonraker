@@ -159,6 +159,8 @@ mkdir -p "${ROOT_MNT}/home/pi/printer_data/config" \
          "${ROOT_MNT}/home/pi/printer_data/logs"
 cp -v "${SCRIPT_DIR}/rootfs/home/pi/printer_data/config/crowsnest.conf" \
     "${ROOT_MNT}/home/pi/printer_data/config/crowsnest.conf"
+cp -v "${SCRIPT_DIR}/rootfs/home/pi/printer_data/config/crowsnest-usb.conf" \
+    "${ROOT_MNT}/home/pi/printer_data/config/crowsnest-usb.conf"
 
 # Create gcode directory
 mkdir -p "${ROOT_MNT}/home/pi/printer_data/gcodes"

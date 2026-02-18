@@ -14,6 +14,7 @@ apt-get install -y -qq --no-install-recommends \
     nginx unzip \
     git make gcc g++ libc6-dev libjpeg62-turbo-dev libevent-dev libbsd-dev v4l-utils crudini xxd \
     cmake \
+    libcamera-dev libavcodec-dev libavformat-dev libavutil-dev nlohmann-json3-dev \
     python3 python3-pip python3-virtualenv ffmpeg
 
 echo "==> [chroot] Downloading Mainsail..."
@@ -29,9 +30,12 @@ git clone --depth 1 https://github.com/mainsail-crew/crowsnest.git /home/pi/crow
 cd /home/pi/crowsnest
 bin/build.sh --reclone
 make build || true
-# camera-streamer may fail to compile on RPi 3 but crowsnest requires the
-# binary to exist at startup. Create a stub if the build didn't produce one.
-if [ ! -x bin/camera-streamer/camera-streamer ]; then
+# Build camera-streamer with libcamera support (no HW H264/RTSP/WebRTC on RPi 3).
+cd bin/camera-streamer
+make USE_HW_H264=0 USE_LIBDATACHANNEL=0 USE_RTSP=0 || true
+cd /home/pi/crowsnest
+# If camera-streamer still didn't compile, create a stub so crowsnest starts.
+if [ ! -s bin/camera-streamer/camera-streamer ]; then
     touch bin/camera-streamer/camera-streamer
     chmod +x bin/camera-streamer/camera-streamer
 fi

@@ -10,3 +10,6 @@ printer:
 
 files:
   gcode_dir: "/home/pi/printer_data/gcodes"
+
+spoolman:
+  server: ""  # Spoolman server URL (e.g. "http://berling:7912")

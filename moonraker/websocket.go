@@ -326,6 +326,35 @@ func (h *WSHub) handleRPC(client *WSClient, req *jsonRPCRequest) {
 	case "server.history.reset_totals":
 		resp.Result = h.handleHistoryResetTotals()
 
+	// Spoolman methods
+	case "server.spoolman.status":
+		if h.server.spoolman == nil {
+			resp.Error = &rpcError{Code: -32601, Message: "Spoolman not configured"}
+		} else {
+			resp.Result = h.handleSpoolmanStatus()
+		}
+
+	case "server.spoolman.get_spool_id":
+		if h.server.spoolman == nil {
+			resp.Error = &rpcError{Code: -32601, Message: "Spoolman not configured"}
+		} else {
+			resp.Result = h.handleSpoolmanGetSpoolID()
+		}
+
+	case "server.spoolman.post_spool_id":
+		if h.server.spoolman == nil {
+			resp.Error = &rpcError{Code: -32601, Message: "Spoolman not configured"}
+		} else {
+			resp.Result = h.handleSpoolmanSetSpoolID(req.Params)
+		}
+
+	case "server.spoolman.proxy":
+		if h.server.spoolman == nil {
+			resp.Error = &rpcError{Code: -32601, Message: "Spoolman not configured"}
+		} else {
+			resp.Result = h.handleSpoolmanProxy(req.Params)
+		}
+
 	default:
 		log.Printf("WebSocket RPC: UNKNOWN method=%s", req.Method)
 		resp.Error = &rpcError{
@@ -426,6 +455,8 @@ func (h *WSHub) handlePrintStart(req *jsonRPCRequest) interface{} {
 		log.Printf("Error uploading to printer: %v", err)
 		return map[string]interface{}{}
 	}
+
+	h.server.startSpoolmanTracking(filename)
 
 	return map[string]interface{}{}
 }

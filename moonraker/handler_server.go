@@ -53,7 +53,7 @@ func (s *Server) serverInfo() map[string]interface{} {
 }
 
 func (s *Server) loadedComponents() []string {
-	return []string{
+	components := []string{
 		"server",
 		"file_manager",
 		"klippy_apis",
@@ -64,6 +64,10 @@ func (s *Server) loadedComponents() []string {
 		"octoprint_compat",
 		"webcam",
 	}
+	if s.spoolman != nil {
+		components = append(components, "spoolman")
+	}
+	return components
 }
 
 func (s *Server) handleServerConfig(w http.ResponseWriter, r *http.Request) {
@@ -73,15 +77,21 @@ func (s *Server) handleServerConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serverConfig() map[string]interface{} {
-	return map[string]interface{}{
+	cfg := map[string]interface{}{
 		"config": map[string]interface{}{
 			"server": map[string]interface{}{
-				"host":                s.config.Server.Host,
-				"port":                s.config.Server.Port,
-				"klippy_uds_address":  "/tmp/klippy_uds",
+				"host":               s.config.Server.Host,
+				"port":               s.config.Server.Port,
+				"klippy_uds_address": "/tmp/klippy_uds",
 			},
 		},
 	}
+	if s.spoolman != nil {
+		cfg["config"].(map[string]interface{})["spoolman"] = map[string]interface{}{
+			"server": s.config.Spoolman.Server,
+		}
+	}
+	return cfg
 }
 
 func (s *Server) handleServerRestart(w http.ResponseWriter, r *http.Request) {

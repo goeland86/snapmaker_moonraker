@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -269,7 +270,11 @@ func extractGCodeMeta(path string, meta map[string]interface{}) {
 			case "estimated printing time (normal mode)", "estimated_time":
 				meta["estimated_time"] = parseDuration(val)
 			case "filament used [mm]", "filament_total":
-				meta["filament_total"] = val
+				if f, err := strconv.ParseFloat(val, 64); err == nil {
+					meta["filament_total"] = f
+				} else {
+					meta["filament_total"] = val
+				}
 			case "first_layer_height":
 				meta["first_layer_height"] = val
 			case "layer_height":

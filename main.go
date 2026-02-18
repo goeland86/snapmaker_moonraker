@@ -16,6 +16,7 @@ import (
 	"github.com/john/snapmaker_moonraker/history"
 	"github.com/john/snapmaker_moonraker/moonraker"
 	"github.com/john/snapmaker_moonraker/printer"
+	"github.com/john/snapmaker_moonraker/spoolman"
 )
 
 func main() {
@@ -82,8 +83,36 @@ func main() {
 	}
 	log.Printf("History directory: %s", filepath.Join(dataDir, "history"))
 
+	// Initialize Spoolman manager (nil if not configured).
+	var spoolmanMgr *spoolman.Manager
+	if cfg.Spoolman.Server != "" {
+		spoolmanMgr = spoolman.NewManager(cfg.Spoolman.Server, db, nil, nil)
+		moonCfg.Spoolman.Server = cfg.Spoolman.Server
+		log.Printf("Spoolman: configured with server %s", cfg.Spoolman.Server)
+	}
+
 	// Create the Moonraker server.
-	server := moonraker.NewServer(moonCfg, pc, state, fm, db, historyMgr)
+	server := moonraker.NewServer(moonCfg, pc, state, fm, db, historyMgr, spoolmanMgr)
+
+	// Start Spoolman health check and wire notification callbacks.
+	if spoolmanMgr != nil {
+		hub := server.Hub()
+		spoolmanMgr = spoolman.NewManager(cfg.Spoolman.Server, db,
+			func(spoolID int) {
+				hub.BroadcastNotification("notify_active_spool_set", []interface{}{
+					map[string]interface{}{"spool_id": spoolID},
+				})
+			},
+			func(connected bool) {
+				hub.BroadcastNotification("notify_spoolman_status_changed", []interface{}{
+					map[string]interface{}{"spoolman_connected": connected},
+				})
+			},
+		)
+		// Re-set on the server since we recreated the manager with callbacks.
+		server.SetSpoolman(spoolmanMgr)
+		spoolmanMgr.StartHealthCheck()
+	}
 
 	// Connect to printer (non-fatal if it fails - we'll retry).
 	if cfg.Printer.IP != "" {
@@ -99,8 +128,22 @@ func main() {
 	}
 
 	// Start state poller.
+	var prevPrinterState string
 	poller := printer.NewStatePoller(pc, state, cfg.Printer.PollInterval, func(s *printer.State) {
 		server.Hub().BroadcastStatusUpdate(s)
+
+		// Spoolman filament usage tracking.
+		if spoolmanMgr != nil {
+			snap := s.Snapshot()
+			if snap.PrinterState == "printing" && spoolmanMgr.IsTracking() {
+				spoolmanMgr.ReportUsage(snap.PrintProgress)
+			}
+			// Detect transition away from printing to stop tracking.
+			if prevPrinterState == "printing" && snap.PrinterState != "printing" {
+				spoolmanMgr.StopTracking()
+			}
+			prevPrinterState = snap.PrinterState
+		}
 	})
 	poller.Start()
 
@@ -113,6 +156,9 @@ func main() {
 		log.Printf("Received signal %v, shutting down...", sig)
 
 		poller.Stop()
+		if spoolmanMgr != nil {
+			spoolmanMgr.StopHealthCheck()
+		}
 		pc.Disconnect()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

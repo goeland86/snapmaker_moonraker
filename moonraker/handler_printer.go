@@ -2,6 +2,7 @@ package moonraker
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -164,12 +165,39 @@ func (s *Server) handlePrintStart(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Error reading file for print: %v", err)
 		} else if err := s.printerClient.Upload(filename, data); err != nil {
 			log.Printf("Error uploading to printer: %v", err)
+		} else {
+			s.startSpoolmanTracking(filename)
 		}
 	}
 
 	writeJSON(w, map[string]interface{}{
 		"result": map[string]interface{}{},
 	})
+}
+
+// startSpoolmanTracking initiates filament usage tracking if Spoolman is configured.
+func (s *Server) startSpoolmanTracking(filename string) {
+	if s.spoolman == nil || s.spoolman.GetSpoolID() == 0 {
+		return
+	}
+
+	meta, err := s.fileManager.GetMetadata("gcodes", filename)
+	if err != nil {
+		return
+	}
+
+	var totalMM float64
+	switch v := meta["filament_total"].(type) {
+	case float64:
+		totalMM = v
+	case string:
+		// Fallback if not yet parsed as float
+		fmt.Sscanf(v, "%f", &totalMM)
+	}
+
+	if totalMM > 0 {
+		s.spoolman.StartTracking(totalMM)
+	}
 }
 
 func (s *Server) handlePrintPause(w http.ResponseWriter, r *http.Request) {

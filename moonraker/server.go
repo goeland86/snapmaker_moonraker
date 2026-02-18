@@ -10,6 +10,7 @@ import (
 	"github.com/john/snapmaker_moonraker/files"
 	"github.com/john/snapmaker_moonraker/history"
 	"github.com/john/snapmaker_moonraker/printer"
+	"github.com/john/snapmaker_moonraker/spoolman"
 )
 
 // ServerConfig holds the configuration needed by the Moonraker server.
@@ -29,6 +30,9 @@ type Config struct {
 	Files struct {
 		GCodeDir string
 	}
+	Spoolman struct {
+		Server string
+	}
 }
 
 // Server is the Moonraker-compatible HTTP/WebSocket server.
@@ -41,11 +45,12 @@ type Server struct {
 	fileManager   *files.Manager
 	database      *database.Database
 	history       *history.Manager
+	spoolman      *spoolman.Manager
 	wsHub         *WSHub
 }
 
 // NewServer creates a new Moonraker server.
-func NewServer(cfg Config, pc *printer.Client, st *printer.State, fm *files.Manager, db *database.Database, hist *history.Manager) *Server {
+func NewServer(cfg Config, pc *printer.Client, st *printer.State, fm *files.Manager, db *database.Database, hist *history.Manager, sm *spoolman.Manager) *Server {
 	s := &Server{
 		config:        cfg,
 		mux:           http.NewServeMux(),
@@ -54,6 +59,7 @@ func NewServer(cfg Config, pc *printer.Client, st *printer.State, fm *files.Mana
 		fileManager:   fm,
 		database:      db,
 		history:       hist,
+		spoolman:      sm,
 	}
 
 	s.wsHub = NewWSHub(s)
@@ -64,6 +70,11 @@ func NewServer(cfg Config, pc *printer.Client, st *printer.State, fm *files.Mana
 	}
 
 	return s
+}
+
+// SetSpoolman replaces the spoolman manager (used to rewire callbacks after server creation).
+func (s *Server) SetSpoolman(sm *spoolman.Manager) {
+	s.spoolman = sm
 }
 
 // History returns the history manager for external access.
@@ -82,6 +93,9 @@ func (s *Server) registerRoutes() {
 	s.registerFileHandlers()
 	s.registerDatabaseHandlers()
 	s.registerHistoryHandlers()
+	if s.spoolman != nil {
+		s.registerSpoolmanHandlers()
+	}
 
 	// WebSocket endpoint.
 	s.mux.HandleFunc("GET /websocket", s.wsHub.HandleWebSocket)

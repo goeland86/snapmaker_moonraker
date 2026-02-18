@@ -9,9 +9,16 @@ import (
 )
 
 type Config struct {
-	Server  ServerConfig  `yaml:"server"`
-	Printer PrinterConfig `yaml:"printer"`
-	Files   FilesConfig   `yaml:"files"`
+	Server   ServerConfig   `yaml:"server"`
+	Printer  PrinterConfig  `yaml:"printer"`
+	Files    FilesConfig    `yaml:"files"`
+	Spoolman SpoolmanConfig `yaml:"spoolman"`
+}
+
+type SpoolmanConfig struct {
+	// Server is the URL of the Spoolman server (e.g. "http://berling:7912").
+	// Empty string = disabled.
+	Server string `yaml:"server"`
 }
 
 type ServerConfig struct {

@@ -134,9 +134,21 @@ func (s *Server) handleGCodeScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Intercept ? and HELP — these are Klipper console commands, not real GCode.
+	if upperScript == "?" || upperScript == "HELP" {
+		s.wsHub.BroadcastNotification("notify_gcode_response", []interface{}{gcodeHelpText()})
+		writeJSON(w, map[string]interface{}{
+			"result": map[string]interface{}{},
+		})
+		return
+	}
+
 	result, err := s.printerClient.ExecuteGCode(body.Script)
 	if err != nil {
 		log.Printf("GCode error: %v", err)
+		s.wsHub.BroadcastNotification("notify_gcode_response", []interface{}{
+			"Error: " + err.Error(),
+		})
 	}
 
 	// Broadcast gcode response to WS clients.
@@ -234,6 +246,15 @@ func (s *Server) handleEmergencyStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{
 		"result": map[string]interface{}{},
 	})
+}
+
+// gcodeHelpText returns a help message for the Mainsail console.
+func gcodeHelpText() string {
+	return "Snapmaker Moonraker Bridge - Supported Console Commands:\n" +
+		"  RESTART - Reconnect to the printer\n" +
+		"  FIRMWARE_RESTART - Reconnect to the printer\n" +
+		"  HELP / ? - Show this help message\n" +
+		"Standard GCode commands are forwarded to the printer (e.g. G28, M104, M140, G0/G1)."
 }
 
 func splitFields(s string) []string {

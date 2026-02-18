@@ -427,14 +427,25 @@ func (h *WSHub) handleGCodeScript(req *jsonRPCRequest) interface{} {
 		return map[string]interface{}{}
 	}
 
+	// Intercept ? and HELP — these are Klipper console commands, not real GCode.
+	if upperScript == "?" || upperScript == "HELP" {
+		h.BroadcastNotification("notify_gcode_response", []interface{}{gcodeHelpText()})
+		return map[string]interface{}{}
+	}
+
 	result, err := h.server.printerClient.ExecuteGCode(script)
 	if err != nil {
 		log.Printf("GCode execution error: %v", err)
+		h.BroadcastNotification("notify_gcode_response", []interface{}{
+			"Error: " + err.Error(),
+		})
 		return map[string]interface{}{}
 	}
 
 	// Send gcode response notification.
-	h.BroadcastNotification("notify_gcode_response", []interface{}{result})
+	if result != "" {
+		h.BroadcastNotification("notify_gcode_response", []interface{}{result})
+	}
 
 	return map[string]interface{}{}
 }

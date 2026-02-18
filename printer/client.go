@@ -171,7 +171,12 @@ func (c *Client) sendQuery(conn net.Conn, router *PacketRouter, commandSet, comm
 	return nil
 }
 
-// queryCoordinates sends a one-shot coordinate query (CommandSet 0x01, CommandID 0x30).
+// QueryCoordinates sends a one-shot coordinate query (CommandSet 0x01, CommandID 0x30).
+// Called by the state poller each cycle to keep position data fresh.
+func (c *Client) QueryCoordinates() {
+	c.queryCoordinates()
+}
+
 func (c *Client) queryCoordinates() {
 	c.mu.Lock()
 	conn := c.conn

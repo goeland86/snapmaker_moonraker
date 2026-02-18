@@ -148,8 +148,9 @@ func (sp *StatePoller) poll() {
 		}
 	}
 
-	// Trigger temperature queries (data arrives asynchronously via the router).
+	// Trigger temperature and coordinate queries.
 	sp.client.QueryTemperatures()
+	sp.client.QueryCoordinates()
 
 	// Small delay to let query responses arrive.
 	time.Sleep(300 * time.Millisecond)

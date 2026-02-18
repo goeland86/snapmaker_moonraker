@@ -849,7 +849,55 @@ Added machine service management endpoints for Mainsail's power menu:
 - Previous commits include crowsnest webcam streaming setup
 
 ### Pending
-- Deploy latest binary to Pi (was offline at end of session)
 - Obico video streaming still not auto-refreshing (server-side issue)
 - Janus binary disabled on Pi — may need re-enabling if WebRTC fixed
 - Obico DEBUG logging left on — should revert to INFO for production
+
+---
+
+## Session 10 - 2026-02-17: Camera Module 3 Support & Deployment
+
+### Objective
+Deploy latest binary to Pi (version bump + gcode commands from Session 9), add Raspberry Pi Camera Module 3 (IMX708 NoIR) support to the image build.
+
+### Binary Deployment
+- Cross-compiled and deployed `v0.13.0-snapmaker_moonraker` binary to Pi
+- Service restarted successfully, immediately detected active print (PRINTING state with filename)
+
+### Camera Module 3 Support
+
+**Problem:** The RPi image only supported USB webcams via ustreamer. The Camera Module 3 (IMX708) requires libcamera, which needs camera-streamer — but camera-streamer was a 0-byte stub because it failed to compile during image build.
+
+**Root cause:** Missing build dependencies (`libcamera-dev`, `nlohmann-json3-dev`, ffmpeg dev packages) in `chroot-install.sh`.
+
+**Fix on live Pi:**
+1. Installed `libcamera-dev`, `libavcodec-dev`, `libavformat-dev`, `libavutil-dev`, `nlohmann-json3-dev`
+2. Built camera-streamer with `USE_HW_H264=0 USE_LIBDATACHANNEL=0 USE_RTSP=0` (RPi 3 lacks HW H264 encoder)
+3. Binary compiled successfully with libcamera support
+4. Updated crowsnest config to `mode: camera-streamer` with `device: /base/soc/i2c0mux/i2c@1/imx708@1a`
+
+**Image build updates:**
+- `image/chroot-install.sh` — Added `libcamera-dev`, `libavcodec-dev`, `libavformat-dev`, `libavutil-dev`, `nlohmann-json3-dev` to apt install. After crowsnest's `make build`, explicitly builds camera-streamer with RPi 3-compatible flags. Stub fallback kept as safety net.
+- `image/build-image.sh` — Copies both `crowsnest.conf` and `crowsnest-usb.conf` into the image
+- `image/rootfs/.../crowsnest.conf` — Default config changed to `mode: camera-streamer` with IMX708 device path
+- `image/rootfs/.../crowsnest-usb.conf` — New alternative config for USB webcams (ustreamer + `/dev/video0`)
+
+**Switching to USB webcam:**
+```bash
+cp ~/printer_data/config/crowsnest-usb.conf ~/printer_data/config/crowsnest.conf
+sudo systemctl restart crowsnest
+```
+
+**Note:** Camera Module 3 not yet physically connected — hardware support is ready, pending user's camera housing.
+
+### Git
+- `30e3e5e` "Add Camera Module 3 support via camera-streamer in RPi image"
+- Tag `v0.0.6` created
+
+### v0.0.6 Release Notes
+- Camera Module 3 support via camera-streamer + libcamera
+- Moonraker-obico compatibility (8 API fixes)
+- Mainsail version bump to suppress warning
+- GCode commands expansion (25+ commands)
+- Service management API
+- USB webcam alternative config included

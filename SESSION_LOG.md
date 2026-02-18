@@ -985,7 +985,9 @@ Deployed to Pi via `deploy.sh` (cross-compile ARM + SCP + systemctl restart). Ad
 ### Git
 - `a3e31e7` "Add Spoolman integration for filament spool management"
 - `bc01b69` "Fix position updates and console HELP/? commands"
-- Tag `v0.0.7`
+- `c575744` "Update session log for v0.0.7, add build artifact to .gitignore"
+- Tag `v0.0.7` — Jenkins CI built the release, changelog added to GitHub release
+- Also retroactively updated v0.0.6 GitHub release with proper changelog
 
 ### v0.0.7 Release Notes
 - Spoolman integration (proxy API, active spool, filament usage tracking)

@@ -901,3 +901,94 @@ sudo systemctl restart crowsnest
 - GCode commands expansion (25+ commands)
 - Service management API
 - USB webcam alternative config included
+
+---
+
+## Session 11 - 2026-02-18: Spoolman Integration & Position/Console Fixes
+
+### Objective
+Add Spoolman integration for filament spool management in Mainsail, fix stale position data during printing, and fix HELP/? console commands.
+
+### Background
+Mainsail has built-in Spoolman support for filament spool management — selecting active spools, tracking usage, warning on material mismatch before prints. It works through Moonraker's Spoolman proxy API. The user has a self-hosted Spoolman server at `http://berling:7912/` with 77 spools across 21 vendors and 12 materials.
+
+### Phase 1: Spoolman Proxy + Active Spool
+
+#### New file: `spoolman/spoolman.go`
+Core Spoolman manager:
+- HTTP client for proxying requests to Spoolman server
+- Active spool ID persisted in database (namespace `"moonraker"`, key `"spoolman.spool_id"`)
+- Connection health checking (30s ticker on `/api/v1/health`)
+- Notification callbacks for WebSocket broadcasts (`notify_active_spool_set`, `notify_spoolman_status_changed`)
+
+#### New file: `moonraker/handler_spoolman.go`
+HTTP endpoints + WebSocket RPC handlers:
+- `GET /server/spoolman/status` / `server.spoolman.status`
+- `GET /server/spoolman/spool_id` / `server.spoolman.get_spool_id`
+- `POST /server/spoolman/spool_id` / `server.spoolman.post_spool_id`
+- `POST /server/spoolman/proxy` / `server.spoolman.proxy`
+
+#### Modified files
+- `config.go` — Added `SpoolmanConfig` struct with `Server` field
+- `config.yaml` + `image/rootfs/.../config.yaml` — Added `spoolman.server` config key
+- `moonraker/server.go` — Added `spoolman` field to `Server`, updated `NewServer()` signature, added `SetSpoolman()` for callback rewiring, conditional route registration
+- `moonraker/handler_server.go` — `loadedComponents()` conditionally includes `"spoolman"`, `serverConfig()` includes spoolman URL
+- `moonraker/websocket.go` — Added 4 Spoolman RPC cases with nil guard
+- `main.go` — Spoolman manager init, callback wiring via `SetSpoolman()`, health check start/stop, graceful shutdown
+
+### Phase 2: Filament Usage Tracking
+
+Progress-based filament usage tracking for bridge-started prints:
+
+- `spoolman/spoolman.go` — `StartTracking(totalFilamentMM)`, `ReportUsage(progress)` (sends delta to `PUT /api/v1/spool/{id}/use` when delta > 0.1mm), `StopTracking()` (sends final report)
+- `files/manager.go` — `filament_total` now parsed as `float64` via `strconv.ParseFloat` (was stored as raw string)
+- `moonraker/handler_printer.go` — Added `startSpoolmanTracking()` helper called on successful print upload (both HTTP and WebSocket paths)
+- `main.go` — State poller callback calls `ReportUsage()` during printing, detects transition away from printing to call `StopTracking()`
+
+### Bug Fix: Position Updates Not Working During Printing
+
+**Problem:** X/Y/Z positions in Mainsail never changed during printing — always showed the values from initial connection.
+
+**Root cause:** `queryCoordinates()` was only called once during `setupSubscriptions()` at connection time. The coordinate data went stale immediately. The state poller called `GetStatus()` every cycle but it read the same cached `coordData`.
+
+**Fix:**
+- `printer/client.go` — Added public `QueryCoordinates()` method wrapping the internal `queryCoordinates()`
+- `printer/state.go` — Added `sp.client.QueryCoordinates()` call in `poll()` alongside `QueryTemperatures()`
+
+**Verified:** Positions now update every poll cycle (tested with 3 consecutive queries showing X changing from 160.2 → 160.1 → 143.8 during active print).
+
+### Bug Fix: HELP and ? Console Commands
+
+**Problem:** Typing `?` or `HELP` in Mainsail's console returned nothing — the commands were sent to the Snapmaker via SACP which doesn't understand Klipper console commands.
+
+**Fix:**
+- `moonraker/websocket.go` + `moonraker/handler_printer.go` — Intercept `?` and `HELP` before sending to printer, return a help message listing supported bridge commands (RESTART, FIRMWARE_RESTART, HELP, plus standard GCode)
+- Also added error broadcasting on GCode execution failures so errors now appear in the Mainsail console instead of being silently swallowed
+
+### Deployment & Verification
+
+Deployed to Pi via `deploy.sh` (cross-compile ARM + SCP + systemctl restart). Added `spoolman.server: "http://berling:7912"` to Pi config.
+
+| Test | Result |
+|------|--------|
+| `server/info` shows `"spoolman"` in components | ✅ |
+| `server/spoolman/status` shows `spoolman_connected: true` | ✅ |
+| `server/spoolman/proxy` returns spool list from Spoolman | ✅ |
+| Set active spool to ID 27 | ✅ |
+| Get active spool returns 27 | ✅ |
+| Spool ID persists across service restart | ✅ |
+| `server/config` includes spoolman URL | ✅ |
+| Position updates during printing (3 consecutive polls) | ✅ |
+| HELP and ? return help text (no printer error) | ✅ |
+| Mainsail Spoolman panel appears and works | ✅ |
+
+### Git
+- `a3e31e7` "Add Spoolman integration for filament spool management"
+- `bc01b69` "Fix position updates and console HELP/? commands"
+- Tag `v0.0.7`
+
+### v0.0.7 Release Notes
+- Spoolman integration (proxy API, active spool, filament usage tracking)
+- Fix position updates during printing (coordinates now polled every cycle)
+- Fix HELP/? console commands
+- GCode error messages now appear in Mainsail console

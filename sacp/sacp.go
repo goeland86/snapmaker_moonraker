@@ -716,41 +716,28 @@ func Home(conn net.Conn, timeout time.Duration) error {
 // StartScreenPrint sends the "start screen print" command (0xB0/0x08) to the
 // screen MCU after a file has been uploaded, triggering the printer to begin printing.
 // headType: 0=FDM printing, 1=CNC, 2=laser.
+//
+// This is fire-and-forget: the command is sent but we don't wait for a response,
+// because after an upload the printer sends subscription push packets that make
+// it impossible to reliably find the response in a raw read loop.
 func StartScreenPrint(conn net.Conn, filename string, md5hex string, headType byte, timeout time.Duration) error {
 	data := bytes.Buffer{}
 	data.WriteByte(headType)
 	writeString(&data, filename)
 	writeString(&data, md5hex)
 
-	seq := nextSequence()
-
 	conn.SetWriteDeadline(time.Now().Add(timeout))
 	_, err := conn.Write(Packet{
 		ReceiverID: 2,
 		SenderID:   0,
 		Attribute:  0,
-		Sequence:   seq,
+		Sequence:   nextSequence(),
 		CommandSet: 0xb0,
 		CommandID:  0x08,
 		Data:       data.Bytes(),
 	}.Encode())
 
-	if err != nil {
-		return err
-	}
-
-	for {
-		p, err := Read(conn, timeout)
-		if err != nil {
-			return err
-		}
-		if p.Sequence == seq && p.CommandSet == 0xb0 && p.CommandID == 0x08 {
-			if len(p.Data) >= 1 && p.Data[0] != 0 {
-				return fmt.Errorf("startScreenPrint failed: code %d", p.Data[0])
-			}
-			return nil
-		}
-	}
+	return err
 }
 
 // StartUpload uploads gcode data to the printer via the SACP file transfer protocol.
@@ -840,8 +827,10 @@ func StartUpload(conn net.Conn, filename string, gcode []byte, timeout time.Dura
 			}
 
 		case p.CommandSet == 0xb0 && p.CommandID == 2:
-			// Upload complete
+			// Upload complete — send first disconnect immediately, matching
+			// sm2uploader's deferred Disconnect() inside SACP_start_upload.
 			if len(p.Data) == 1 && p.Data[0] == 0 {
+				Disconnect(conn, timeout)
 				return md5hex, nil
 			}
 			log.Printf("Unexpected upload completion data: %v", p.Data)

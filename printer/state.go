@@ -124,6 +124,19 @@ func (sp *StatePoller) run() {
 
 func (sp *StatePoller) poll() {
 	if !sp.client.Connected() {
+		// During upload, the SACP connection is temporarily taken over for
+		// file transfer. Don't try to reconnect and keep reporting the last
+		// known state as connected so Mainsail doesn't show a disconnect.
+		if sp.client.IsUploading() {
+			sp.state.mu.Lock()
+			sp.state.data.Connected = true
+			sp.state.mu.Unlock()
+			if sp.callback != nil {
+				sp.callback(sp.state)
+			}
+			return
+		}
+
 		// Try to reconnect automatically.
 		if sp.client.IP() != "" {
 			if sp.client.Ping() {

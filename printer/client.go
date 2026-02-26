@@ -23,10 +23,11 @@ type Client struct {
 	token string
 	model string
 
-	mu      sync.Mutex
-	conn    net.Conn
-	router  *PacketRouter
-	writeMu sync.Mutex // serializes writes to conn
+	mu        sync.Mutex
+	conn      net.Conn
+	router    *PacketRouter
+	writeMu   sync.Mutex // serializes writes to conn
+	uploading bool       // true during Upload() to prevent poller reconnection
 
 	// Subscription data (updated asynchronously by the packet router).
 	subMu         sync.RWMutex
@@ -473,6 +474,14 @@ func (c *Client) Connected() bool {
 	return c.conn != nil
 }
 
+// IsUploading returns true if an upload is in progress.
+// Used by the state poller to avoid reconnection attempts during upload.
+func (c *Client) IsUploading() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.uploading
+}
+
 // IP returns the printer's IP address.
 func (c *Client) IP() string {
 	return c.ip
@@ -541,13 +550,23 @@ func (c *Client) SetBedTemperature(toolID int, temp int) error {
 }
 
 // Upload uploads gcode data to the printer and starts printing.
-// Temporarily stops the router to take direct control of the connection.
+// Follows the sm2uploader pattern: upload → disconnect → disconnect → close → reconnect.
+// The double disconnect signals the HMI to finalize and index the uploaded file.
 func (c *Client) Upload(filename string, data []byte) error {
 	c.mu.Lock()
 	conn := c.conn
 	router := c.router
 	c.router = nil
+	c.conn = nil
+	c.uploading = true // Prevent state poller from reconnecting during upload.
 	c.mu.Unlock()
+
+	// Ensure uploading flag is cleared when we're done, regardless of outcome.
+	defer func() {
+		c.mu.Lock()
+		c.uploading = false
+		c.mu.Unlock()
+	}()
 
 	if conn == nil {
 		return fmt.Errorf("not connected")
@@ -560,32 +579,49 @@ func (c *Client) Upload(filename string, data []byte) error {
 
 	data = gcode.Process(data, c.model)
 
-	md5hex, err := sacp.StartUpload(conn, filename, data, sacpTimeout)
-	if err == nil {
-		// Use basename for StartScreenPrint — the HMI stores files flat.
-		printName := filepath.Base(filename)
-		log.Printf("Upload complete, waiting for HMI to index file...")
-		time.Sleep(2 * time.Second)
-		log.Printf("Starting print: filename=%q md5=%s", printName, md5hex)
-		err = sacp.StartScreenPrint(conn, printName, md5hex, 0, sacpTimeout)
-		if err != nil {
-			log.Printf("StartScreenPrint failed: %v", err)
-		} else {
-			log.Printf("StartScreenPrint succeeded")
-		}
+	// Use only the base filename for SACP upload — the printer stores files flat,
+	// and paths with subdirectories confuse the HMI file index.
+	uploadName := filepath.Base(filename)
+
+	md5hex, err := sacp.StartUpload(conn, uploadName, data, sacpTimeout)
+	if err != nil {
+		// Upload failed — close and schedule reconnect.
+		conn.Close()
+		go c.reconnectAfterUpload()
+		return fmt.Errorf("upload failed: %w", err)
 	}
 
-	// Restart the router and re-subscribe.
-	newRouter := NewPacketRouter(conn, c.handleSubscription, c.handleDisconnect)
-	newRouter.Start()
+	// Auto-start the print (fire-and-forget: send command, don't wait for response
+	// because subscription push packets make the raw read loop unreliable).
+	// StartUpload already sent the first disconnect; this must go before the second.
+	log.Printf("Starting print: filename=%q md5=%s", uploadName, md5hex)
+	if spErr := sacp.StartScreenPrint(conn, uploadName, md5hex, 0, sacpTimeout); spErr != nil {
+		log.Printf("StartScreenPrint send failed: %v", spErr)
+	}
 
-	c.mu.Lock()
-	c.router = newRouter
-	c.mu.Unlock()
+	// Second disconnect from the caller (first was inside StartUpload).
+	log.Printf("Sending second disconnect to finalize HMI indexing...")
+	sacp.Disconnect(conn, sacpTimeout)
+	conn.Close()
 
-	go c.setupSubscriptions()
+	// Wait for the HMI to index the file before reconnecting.
+	time.Sleep(3 * time.Second)
 
-	return err
+	// Reconnect with a fresh SACP connection.
+	log.Printf("Reconnecting after upload...")
+	if err := c.Connect(); err != nil {
+		log.Printf("Reconnect after upload failed: %v (state poller will retry)", err)
+	}
+
+	return nil
+}
+
+// reconnectAfterUpload attempts to re-establish the SACP connection in the background.
+func (c *Client) reconnectAfterUpload() {
+	time.Sleep(2 * time.Second)
+	if err := c.Connect(); err != nil {
+		log.Printf("Background reconnect after upload failed: %v", err)
+	}
 }
 
 // UploadFile uploads a file from a reader.

@@ -10,23 +10,25 @@ import (
 
 // metadata holds extracted gcode metadata for header generation.
 type metadata struct {
-	nozzleTemp     [2]float64
-	nozzleTempSet  [2]bool
-	bedTemp        float64
-	bedTempSet     bool
-	minX, minY     float64
-	minZ           float64
-	maxX, maxY     float64
-	maxZ           float64
-	hasCoords      bool
-	filamentMM     [2]float64 // per-tool filament extruded in mm
-	layerHeight    float64
-	estimatedTime  float64 // seconds
-	toolsUsed      [2]bool
-	filamentType   string
-	nozzleDiameter float64
-	maxToolNum     int
-	lastToolLine   [2]int // last line index where each (remapped) tool is active
+	nozzleTemp       [2]float64
+	nozzleTempSet    [2]bool
+	bedTemp          float64
+	bedTempSet       bool
+	minX, minY       float64
+	minZ             float64
+	maxX, maxY       float64
+	maxZ             float64
+	hasCoords        bool
+	filamentMM       [2]float64  // per-tool filament extruded in mm
+	layerHeight      float64
+	estimatedTime    float64 // seconds
+	toolsUsed        [2]bool
+	filamentType     [2]string
+	nozzleDiameter   [2]float64
+	retraction       [2]float64
+	switchRetraction [2]float64
+	maxToolNum       int
+	lastToolLine     [2]int // last line index where each (remapped) tool is active
 }
 
 // Process takes raw gcode data and a printer model string, and returns
@@ -52,7 +54,7 @@ func Process(data []byte, printerModel string) []byte {
 	// Pass 1: scan for metadata.
 	meta := scanMetadata(lines)
 
-	log.Printf("gcode: scanned %d lines — tools=%v maxTool=T%d temps=[%.0f,%.0f] bed=%.0f filament=[%.1f,%.1f]mm est=%0.fs",
+	log.Printf("gcode: scanned %d lines — tools=%v maxTool=T%d temps=[%.0f,%.0f] bed=%.0f filament=[%.1f,%.1f]mm est=%.0fs",
 		len(lines), meta.toolsUsed, meta.maxToolNum,
 		meta.nozzleTemp[0], meta.nozzleTemp[1], meta.bedTemp,
 		meta.filamentMM[0], meta.filamentMM[1], meta.estimatedTime)
@@ -61,10 +63,10 @@ func Process(data []byte, printerModel string) []byte {
 	transformed := transformLines(lines, meta)
 
 	// Build and prepend header.
-	header := buildHeader(meta, printerModel)
+	header := buildHeader(meta, printerModel, len(transformed))
 
-	log.Printf("gcode: header prepended (%d bytes), output %d lines",
-		len(header), len(transformed))
+	log.Printf("gcode: %s header prepended (%d bytes), output %d lines",
+		headerVersion(printerModel), len(header), len(transformed))
 
 	return []byte(header + strings.Join(transformed, "\n"))
 }
@@ -72,15 +74,17 @@ func Process(data []byte, printerModel string) []byte {
 // scanMetadata makes a single pass over all gcode lines to extract metadata.
 func scanMetadata(lines []string) *metadata {
 	meta := &metadata{
-		minX:           math.MaxFloat64,
-		minY:           math.MaxFloat64,
-		minZ:           math.MaxFloat64,
-		maxX:           -math.MaxFloat64,
-		maxY:           -math.MaxFloat64,
-		maxZ:           -math.MaxFloat64,
-		filamentType:   "PLA",
-		nozzleDiameter: 0.4,
-		lastToolLine:   [2]int{-1, -1},
+		minX:             math.MaxFloat64,
+		minY:             math.MaxFloat64,
+		minZ:             math.MaxFloat64,
+		maxX:             -math.MaxFloat64,
+		maxY:             -math.MaxFloat64,
+		maxZ:             -math.MaxFloat64,
+		filamentType:     [2]string{"PLA", "PLA"},
+		nozzleDiameter:   [2]float64{0.4, 0.4},
+		retraction:       [2]float64{0.8, 0.8},
+		switchRetraction: [2]float64{0, 0},
+		lastToolLine:     [2]int{-1, -1},
 	}
 
 	currentTool := 0
@@ -269,13 +273,33 @@ func scanComment(comment string, meta *metadata) {
 		// May be semicolon-separated for multi-tool (e.g., "PLA;PETG").
 		parts := strings.Split(val, ";")
 		if t := strings.TrimSpace(parts[0]); t != "" {
-			meta.filamentType = t
+			meta.filamentType[0] = t
+		}
+		if len(parts) > 1 {
+			if t := strings.TrimSpace(parts[1]); t != "" {
+				meta.filamentType[1] = t
+			}
 		}
 	case "nozzle_diameter":
 		// May be comma-separated for multi-tool.
 		parts := strings.Split(val, ",")
 		if v, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64); err == nil {
-			meta.nozzleDiameter = v
+			meta.nozzleDiameter[0] = v
+		}
+		if len(parts) > 1 {
+			if v, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); err == nil {
+				meta.nozzleDiameter[1] = v
+			}
+		}
+	case "retract_length":
+		if v, err := strconv.ParseFloat(strings.Split(val, ",")[0], 64); err == nil {
+			meta.retraction[0] = v
+			meta.retraction[1] = v
+		}
+	case "retract_length_toolchange":
+		if v, err := strconv.ParseFloat(strings.Split(val, ",")[0], 64); err == nil {
+			meta.switchRetraction[0] = v
+			meta.switchRetraction[1] = v
 		}
 	}
 }
@@ -416,8 +440,97 @@ func remapParam(original, codePart, commentPart string, param byte) string {
 	return out
 }
 
-// buildHeader generates the Snapmaker V0 header comment block.
-func buildHeader(meta *metadata, printerModel string) string {
+// isJ1Model returns true if the printer model is a Snapmaker J1 variant.
+func isJ1Model(model string) bool {
+	return strings.Contains(strings.ToLower(model), "j1")
+}
+
+// headerVersion returns a label for the header format being used.
+func headerVersion(printerModel string) string {
+	if isJ1Model(printerModel) {
+		return "V1"
+	}
+	return "V0"
+}
+
+// buildHeader generates the appropriate Snapmaker header for the printer model.
+func buildHeader(meta *metadata, printerModel string, totalLines int) string {
+	if isJ1Model(printerModel) {
+		return buildHeaderV1(meta, totalLines)
+	}
+	return buildHeaderV0(meta, printerModel)
+}
+
+// v1HeaderLines is the number of lines in a V1 header (without thumbnail).
+const v1HeaderLines = 25
+
+// buildHeaderV1 generates the Snapmaker V1 header format used by J1/J1S.
+// This is the format the J1S HMI requires to index and display files.
+func buildHeaderV1(meta *metadata, totalLines int) string {
+	// Extruder mode.
+	extruderMode := "Default"
+	if meta.toolsUsed[0] && meta.toolsUsed[1] {
+		extruderMode = "Default" // dual-extrusion default; IDEX modes not detectable from gcode alone
+	}
+
+	// Extruders used count: 1 or 2.
+	extrudersUsed := 0
+	if meta.toolsUsed[0] {
+		extrudersUsed++
+	}
+	if meta.toolsUsed[1] {
+		extrudersUsed++
+	}
+	if extrudersUsed == 0 {
+		extrudersUsed = 1
+	}
+
+	var b strings.Builder
+	b.WriteString(";Header Start\n")
+	b.WriteString(";Version:1\n")
+	b.WriteString(";Printer:Snapmaker J1\n")
+	fmt.Fprintf(&b, ";Estimated Print Time:%d\n", int(meta.estimatedTime))
+	fmt.Fprintf(&b, ";Lines:%d\n", totalLines+v1HeaderLines)
+	fmt.Fprintf(&b, ";Extruder Mode:%s\n", extruderMode)
+
+	// Per-extruder fields.
+	for i := 0; i < 2; i++ {
+		material := meta.filamentType[i]
+		temp := meta.nozzleTemp[i]
+		nozzle := meta.nozzleDiameter[i]
+		retract := meta.retraction[i]
+		switchRetract := meta.switchRetraction[i]
+
+		// Unused extruder: clear material and temps (matches SMFix behavior).
+		if !meta.toolsUsed[i] && (i == 1 || !meta.toolsUsed[0]) {
+			material = "-"
+			temp = 0
+			retract = 0
+			switchRetract = 0
+		}
+
+		fmt.Fprintf(&b, ";Extruder %d Nozzle Size:%.1f\n", i, nozzle)
+		fmt.Fprintf(&b, ";Extruder %d Material:%s\n", i, material)
+		fmt.Fprintf(&b, ";Extruder %d Print Temperature:%.0f\n", i, temp)
+		fmt.Fprintf(&b, ";Extruder %d Retraction Distance:%.2f\n", i, retract)
+		fmt.Fprintf(&b, ";Extruder %d Switch Retraction Distance:%.2f\n", i, switchRetract)
+	}
+
+	fmt.Fprintf(&b, ";Bed Temperature:%.0f\n", meta.bedTemp)
+	fmt.Fprintf(&b, ";Work Range - Min X:%.4f\n", meta.minX)
+	fmt.Fprintf(&b, ";Work Range - Min Y:%.4f\n", meta.minY)
+	fmt.Fprintf(&b, ";Work Range - Min Z:%.4f\n", meta.minZ)
+	fmt.Fprintf(&b, ";Work Range - Max X:%.4f\n", meta.maxX)
+	fmt.Fprintf(&b, ";Work Range - Max Y:%.4f\n", meta.maxY)
+	fmt.Fprintf(&b, ";Work Range - Max Z:%.4f\n", meta.maxZ)
+	fmt.Fprintf(&b, ";Extruder(s) Used:%d\n", extrudersUsed)
+	b.WriteString(";Header End\n")
+
+	return b.String()
+}
+
+// buildHeaderV0 generates the Snapmaker V0 header format used by A150/A250/A350/A400/Artisan.
+func buildHeaderV0(meta *metadata, printerModel string) string {
 	// Tool head type.
 	toolHead := "singleExtruderToolheadForSM2"
 	if meta.toolsUsed[1] {
@@ -427,7 +540,7 @@ func buildHeader(meta *metadata, printerModel string) string {
 	// Machine name.
 	machine := printerModel
 	if machine == "" {
-		machine = "J1"
+		machine = "Snapmaker"
 	}
 
 	// Total filament in meters.
@@ -435,12 +548,11 @@ func buildHeader(meta *metadata, printerModel string) string {
 	totalFilamentM := totalFilamentMM / 1000.0
 
 	// Filament weight: volume (cm³) × density (g/cm³).
-	// Volume = length_mm × π × (d_mm/2)² mm³, ÷ 1000 → cm³.
 	radiusMM := 1.75 / 2.0
 	volumeCM3 := totalFilamentMM * math.Pi * radiusMM * radiusMM / 1000.0
 	weightG := volumeCM3 * 1.24 // PLA density g/cm³
 
-	// Estimated time with 1.07× multiplier (matches SMFix).
+	// Estimated time with 1.07× multiplier (matches SMFix V0).
 	estTime := meta.estimatedTime * 1.07
 
 	// Extruder bitmask: 1=T0 only, 2=T1 only, 3=both.
@@ -452,7 +564,7 @@ func buildHeader(meta *metadata, printerModel string) string {
 		extruderMask |= 2
 	}
 	if extruderMask == 0 {
-		extruderMask = 1 // default to T0
+		extruderMask = 1
 	}
 
 	layerHeight := meta.layerHeight
@@ -462,20 +574,30 @@ func buildHeader(meta *metadata, printerModel string) string {
 
 	var b strings.Builder
 	b.WriteString(";Header Start\n")
+	b.WriteString(";FAVOR:Marlin\n")
+	fmt.Fprintf(&b, ";TIME:6666\n") // hardcoded dummy (matches SMFix)
+	fmt.Fprintf(&b, ";Filament used: %.5fm\n", totalFilamentM)
+	fmt.Fprintf(&b, ";Layer height: %.2f\n", layerHeight)
 	b.WriteString(";header_type: 3dp\n")
 	fmt.Fprintf(&b, ";tool_head: %s\n", toolHead)
 	fmt.Fprintf(&b, ";machine: %s\n", machine)
-	fmt.Fprintf(&b, ";Nozzle Diameter [mm] = %.2f\n", meta.nozzleDiameter)
-	fmt.Fprintf(&b, ";Filament Type = %s\n", meta.filamentType)
-	fmt.Fprintf(&b, ";Filament Length [m] = %.2f\n", totalFilamentM)
-	fmt.Fprintf(&b, ";Filament Weight [g] = %.2f\n", weightG)
-	fmt.Fprintf(&b, ";Layer Height [mm] = %.2f\n", layerHeight)
-	fmt.Fprintf(&b, ";Nozzle Temperatures [\u00b0C] = %.0f, %.0f\n", meta.nozzleTemp[0], meta.nozzleTemp[1])
-	fmt.Fprintf(&b, ";Bed Temperature [\u00b0C] = %.0f\n", meta.bedTemp)
-	fmt.Fprintf(&b, ";Estimated Printing Time [s] = %.0f\n", estTime)
+	fmt.Fprintf(&b, ";estimated_time(s): %.0f\n", estTime)
+	fmt.Fprintf(&b, ";nozzle_temperature(\u00b0C): %.0f\n", meta.nozzleTemp[0])
+	fmt.Fprintf(&b, ";nozzle_0_diameter(mm): %.1f\n", meta.nozzleDiameter[0])
+	fmt.Fprintf(&b, ";nozzle_0_material: %s\n", meta.filamentType[0])
+	fmt.Fprintf(&b, ";nozzle_1_temperature(\u00b0C): %.0f\n", meta.nozzleTemp[1])
+	fmt.Fprintf(&b, ";nozzle_1_diameter(mm): %.1f\n", meta.nozzleDiameter[1])
+	fmt.Fprintf(&b, ";nozzle_1_material: %s\n", meta.filamentType[1])
+	fmt.Fprintf(&b, ";build_plate_temperature(\u00b0C): %.0f\n", meta.bedTemp)
+	fmt.Fprintf(&b, ";max_x(mm): %.4f\n", meta.maxX)
+	fmt.Fprintf(&b, ";max_y(mm): %.4f\n", meta.maxY)
+	fmt.Fprintf(&b, ";max_z(mm): %.4f\n", meta.maxZ)
+	fmt.Fprintf(&b, ";min_x(mm): %.4f\n", meta.minX)
+	fmt.Fprintf(&b, ";min_y(mm): %.4f\n", meta.minY)
+	fmt.Fprintf(&b, ";min_z(mm): %.4f\n", meta.minZ)
 	fmt.Fprintf(&b, ";Extruder(s) Used = %d\n", extruderMask)
-	fmt.Fprintf(&b, ";Work Range - Min [mm] = (%.1f, %.1f, %.1f)\n", meta.minX, meta.minY, meta.minZ)
-	fmt.Fprintf(&b, ";Work Range - Max [mm] = (%.1f, %.1f, %.1f)\n", meta.maxX, meta.maxY, meta.maxZ)
+	fmt.Fprintf(&b, ";matierial_weight: %.4f\n", weightG)     // deliberate typo matches firmware
+	fmt.Fprintf(&b, ";matierial_length: %.5f\n", totalFilamentM) // deliberate typo matches firmware
 	b.WriteString(";Header End\n")
 
 	return b.String()

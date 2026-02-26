@@ -45,9 +45,9 @@ func (m *Manager) ListFiles(root string) []map[string]interface{} {
 		relPath = filepath.ToSlash(relPath)
 
 		result = append(result, map[string]interface{}{
-			"path":     relPath,
-			"modified": float64(info.ModTime().UnixNano()) / 1e9,
-			"size":     info.Size(),
+			"filename":    relPath,
+			"modified":    float64(info.ModTime().UnixNano()) / 1e9,
+			"size":        info.Size(),
 			"permissions": "rw",
 		})
 		return nil

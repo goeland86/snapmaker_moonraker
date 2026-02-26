@@ -994,3 +994,78 @@ Deployed to Pi via `deploy.sh` (cross-compile ARM + SCP + systemctl restart). Ad
 - Fix position updates during printing (coordinates now polled every cycle)
 - Fix HELP/? console commands
 - GCode error messages now appear in Mainsail console
+
+---
+
+# Session Log - 2026-02-26
+
+## Objective
+Add a GCode post-processor so files uploaded from Mainsail appear on the Snapmaker J1S touchscreen and dual-extruder tool numbers are correctly remapped. Also fix Spoolman filament tracking to use line-based instead of progress-based reporting, and add StartScreenPrint SACP command to auto-start prints after upload.
+
+## What Was Done
+
+### 1. GCode Post-Processor (`gcode/process.go`) — New Package
+
+Reimplements the critical transformations from SMFix (github.com/macdylan/SMFix) directly in the bridge so files uploaded via Mainsail are automatically processed before reaching the printer.
+
+**`Process(data []byte, printerModel string) []byte`** — top-level function, two-pass approach:
+
+- **Pass 1 — `scanMetadata()`**: Single pass over all lines extracts:
+  - Nozzle temps (T0, T1) from first M104/M109 per tool
+  - Bed temp from first M140/M190
+  - Min/Max X, Y, Z from G0/G1 coordinates
+  - Per-tool filament length (handles M82 absolute / M83 relative / G92 resets)
+  - Layer height from `;layer_height` comment or first Z move delta
+  - Estimated time from `;estimated printing time` / `;TIME:` comments
+  - Tools used, filament type, nozzle diameter from slicer comments
+  - Last active line per tool (for nozzle shutoff decisions)
+
+- **Pass 2 — `transformLines()`**: Rewrites lines:
+  - Tool number remapping (only if max tool > T1): `T{n}` → `T{n%2}`, M104/M109 `T` param, M106/M107 `P` param
+  - Unused nozzle shutoff: inserts `M104 S0 T{prev}` on tool change when the previous tool won't be used again
+
+- **`buildHeader()`**: Generates Snapmaker V0 header (`;Header Start`...`;Header End`) with:
+  - `tool_head`: single/dual extruder based on tools used
+  - `machine`: from printer model config
+  - Filament length (m), weight (g, computed from PLA density 1.24 g/cm³)
+  - Nozzle/bed temperatures, layer height, estimated time (×1.07 multiplier)
+  - Extruder bitmask (1=T0, 2=T1, 3=both), work range min/max
+
+- Idempotent: skips processing if `;Header Start` already present
+
+### 2. Upload Integration (`printer/client.go`)
+
+Single-line addition: `data = gcode.Process(data, c.model)` before `sacp.StartUpload()` in `Upload()`.
+
+### 3. StartScreenPrint SACP Command (`sacp/sacp.go`)
+
+- New `StartScreenPrint(conn, filename, md5hex, headType, timeout)` — sends command 0xB0/0x08 to the screen MCU (ReceiverID=2) after upload to trigger printing on the touchscreen
+- `StartUpload()` now returns `(string, error)` — the MD5 hex string needed by StartScreenPrint
+- `Upload()` in `printer/client.go` calls StartScreenPrint after successful upload with a 2-second delay for HMI indexing
+
+### 4. Spoolman Line-Based Filament Tracking
+
+Changed from progress-based (unreliable) to line-based tracking:
+
+- **`files/manager.go`**: Added `ParseFilamentByLine(path)` — reads a gcode file and returns cumulative filament extruded (mm) indexed by line number, handling M82/M83 extrusion modes
+- **`spoolman/spoolman.go`**: `StartTracking(filamentByLine []float64)` replaces `StartTracking(totalMM float64)`; `ReportUsage(currentLine int)` replaces `ReportUsage(progress float64)` — looks up actual filament consumed at the current gcode line
+- **`printer/state.go`**: Added `CurrentLine int` to `StateData`; added `uint32` case to `floatFromMap`
+- **`moonraker/handler_printer.go`**: `startSpoolmanTracking()` now parses filament-by-line data from the gcode file and passes it to Spoolman
+- **`main.go`**: State poller passes `snap.CurrentLine` instead of `snap.PrintProgress` to `ReportUsage`
+
+### 5. GCode Execution Fix (`sacp/sacp.go`)
+
+Accept SACP result code 15 as success for motion commands (G0, G1, G28) — previously treated as error.
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| `gcode/process.go` | **New** — GCode post-processor (header, tool remap, nozzle shutoff) |
+| `printer/client.go` | Import gcode pkg, call `gcode.Process()` before upload, call `StartScreenPrint` after upload |
+| `sacp/sacp.go` | Add `StartScreenPrint()`, `StartUpload` returns MD5, accept code 15 in gcode execution |
+| `files/manager.go` | Add `ParseFilamentByLine()` |
+| `spoolman/spoolman.go` | Line-based tracking (`filamentByLine` slice, `ReportUsage(currentLine)`) |
+| `printer/state.go` | Add `CurrentLine` field, `uint32` in `floatFromMap` |
+| `moonraker/handler_printer.go` | Use `ParseFilamentByLine` for Spoolman tracking |
+| `main.go` | Pass `CurrentLine` to `ReportUsage` |

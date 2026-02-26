@@ -7,9 +7,11 @@ import (
 	"io"
 	"log"
 	"net"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/john/snapmaker_moonraker/gcode"
 	"github.com/john/snapmaker_moonraker/sacp"
 )
 
@@ -538,7 +540,7 @@ func (c *Client) SetBedTemperature(toolID int, temp int) error {
 	return c.sendCommand(0x14, 0x02, data.Bytes())
 }
 
-// Upload uploads gcode data to the printer.
+// Upload uploads gcode data to the printer and starts printing.
 // Temporarily stops the router to take direct control of the connection.
 func (c *Client) Upload(filename string, data []byte) error {
 	c.mu.Lock()
@@ -556,7 +558,22 @@ func (c *Client) Upload(filename string, data []byte) error {
 		router.Stop()
 	}
 
-	err := sacp.StartUpload(conn, filename, data, sacpTimeout)
+	data = gcode.Process(data, c.model)
+
+	md5hex, err := sacp.StartUpload(conn, filename, data, sacpTimeout)
+	if err == nil {
+		// Use basename for StartScreenPrint — the HMI stores files flat.
+		printName := filepath.Base(filename)
+		log.Printf("Upload complete, waiting for HMI to index file...")
+		time.Sleep(2 * time.Second)
+		log.Printf("Starting print: filename=%q md5=%s", printName, md5hex)
+		err = sacp.StartScreenPrint(conn, printName, md5hex, 0, sacpTimeout)
+		if err != nil {
+			log.Printf("StartScreenPrint failed: %v", err)
+		} else {
+			log.Printf("StartScreenPrint succeeded")
+		}
+	}
 
 	// Restart the router and re-subscribe.
 	newRouter := NewPacketRouter(conn, c.handleSubscription, c.handleDisconnect)
@@ -611,7 +628,8 @@ func (c *Client) ExecuteGCode(gcode string) (string, error) {
 	if len(p.Data) < 1 {
 		return "", nil
 	}
-	if p.Data[0] != 0 {
+	// Code 15 is returned for motion commands (G0, G1, G28) and indicates success.
+	if p.Data[0] != 0 && p.Data[0] != 15 {
 		return "", fmt.Errorf("gcode execution failed with code %d", p.Data[0])
 	}
 	if len(p.Data) > 1 {
@@ -668,6 +686,7 @@ func (c *Client) GetStatus() (map[string]interface{}, error) {
 		"progress":    progress,
 		"elapsedTime": float64(c.printTime),
 		"fileName":    c.printFilename,
+		"currentLine": c.currentLine,
 		"x":           c.coordData.X,
 		"y":           c.coordData.Y,
 		"z":           c.coordData.Z,

@@ -36,6 +36,7 @@ type Manager struct {
 
 	// Phase 2: filament usage tracking
 	trackingMu          sync.Mutex
+	filamentByLine      []float64 // cumulative mm indexed by line number
 	totalFilamentMM     float64
 	lastReportedUsageMM float64
 	trackingActive      bool
@@ -203,27 +204,30 @@ func (m *Manager) StopHealthCheck() {
 // --- Phase 2: Filament Usage Tracking ---
 
 // StartTracking begins tracking filament usage for a bridge-started print.
-func (m *Manager) StartTracking(totalFilamentMM float64) {
+// filamentByLine is a slice of cumulative mm indexed by gcode line number.
+func (m *Manager) StartTracking(filamentByLine []float64) {
 	m.trackingMu.Lock()
 	defer m.trackingMu.Unlock()
 
-	if m.GetSpoolID() == 0 || totalFilamentMM <= 0 {
+	if m.GetSpoolID() == 0 || len(filamentByLine) == 0 {
 		return
 	}
 
-	m.totalFilamentMM = totalFilamentMM
+	m.filamentByLine = filamentByLine
+	m.totalFilamentMM = filamentByLine[len(filamentByLine)-1]
 	m.lastReportedUsageMM = 0
 	m.trackingActive = true
-	log.Printf("Spoolman: tracking filament usage, total=%.1fmm on spool %d", totalFilamentMM, m.GetSpoolID())
+	log.Printf("Spoolman: tracking filament usage, total=%.1fmm (%d lines) on spool %d",
+		m.totalFilamentMM, len(filamentByLine), m.GetSpoolID())
 }
 
-// ReportUsage reports filament usage based on print progress (0.0 - 1.0).
+// ReportUsage reports filament usage based on the current gcode line number.
 // Called periodically from the state poller during printing.
-func (m *Manager) ReportUsage(progress float64) {
+func (m *Manager) ReportUsage(currentLine int) {
 	m.trackingMu.Lock()
 	defer m.trackingMu.Unlock()
 
-	if !m.trackingActive {
+	if !m.trackingActive || len(m.filamentByLine) == 0 {
 		return
 	}
 
@@ -232,7 +236,16 @@ func (m *Manager) ReportUsage(progress float64) {
 		return
 	}
 
-	usedMM := m.totalFilamentMM * progress
+	// Clamp line to valid range.
+	idx := currentLine
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(m.filamentByLine) {
+		idx = len(m.filamentByLine) - 1
+	}
+
+	usedMM := m.filamentByLine[idx]
 	deltaMM := usedMM - m.lastReportedUsageMM
 
 	// Only report if delta is meaningful (> 0.1mm).
@@ -279,6 +292,7 @@ func (m *Manager) StopTracking() {
 	// Send final delta if any remains.
 	spoolID := m.GetSpoolID()
 	if spoolID == 0 {
+		m.filamentByLine = nil
 		return
 	}
 
@@ -306,6 +320,7 @@ func (m *Manager) StopTracking() {
 	resp.Body.Close()
 
 	log.Printf("Spoolman: tracking stopped, final %.1fmm reported to spool %d", deltaMM, spoolID)
+	m.filamentByLine = nil
 }
 
 // IsTracking returns whether filament tracking is active.

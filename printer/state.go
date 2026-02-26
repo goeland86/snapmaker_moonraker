@@ -33,6 +33,7 @@ type StateData struct {
 	PrintProgress float64 `json:"print_progress"` // 0.0 - 1.0
 	PrintFileName string  `json:"print_file_name"`
 	PrintDuration float64 `json:"print_duration"` // seconds
+	CurrentLine   int     `json:"current_line"`
 
 	// Homing
 	HomedAxes string `json:"homed_axes"` // e.g. "xyz"
@@ -201,6 +202,9 @@ func (sp *StatePoller) parseStatus(status map[string]interface{}) {
 	// Progress: always update so it resets to 0 when print completes.
 	sp.state.data.PrintProgress = floatFromMap(status, "progress") / 100.0
 
+	// Current line number from SACP subscription.
+	sp.state.data.CurrentLine = int(floatFromMap(status, "currentLine"))
+
 	// Filename: update from HTTP response; clear when idle.
 	if v, ok := status["fileName"].(string); ok {
 		sp.state.data.PrintFileName = v
@@ -231,6 +235,8 @@ func floatFromMap(m map[string]interface{}, keys ...string) float64 {
 			case int:
 				return float64(val)
 			case int64:
+				return float64(val)
+			case uint32:
 				return float64(val)
 			}
 		}

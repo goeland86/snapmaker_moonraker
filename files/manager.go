@@ -1,7 +1,9 @@
 package files
 
 import (
+	"bufio"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -234,6 +236,79 @@ func (m *Manager) DeleteFile(root, filename string) error {
 	}
 
 	return os.Remove(path)
+}
+
+// ParseFilamentByLine reads a gcode file and returns cumulative filament extruded (mm)
+// indexed by line number (0-based). Handles both absolute (M82) and relative (M83) extrusion.
+func ParseFilamentByLine(path string) ([]float64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var result []float64
+	var cumulative float64
+	var lastAbsE float64
+	relative := false // default is absolute extrusion
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Strip comments.
+		if idx := strings.IndexByte(line, ';'); idx >= 0 {
+			line = line[:idx]
+		}
+		line = strings.TrimSpace(line)
+
+		upper := strings.ToUpper(line)
+		if upper == "M83" {
+			relative = true
+			result = append(result, cumulative)
+			continue
+		}
+		if upper == "M82" {
+			relative = false
+			result = append(result, cumulative)
+			continue
+		}
+
+		// Only parse G0/G1 moves.
+		if !strings.HasPrefix(upper, "G0 ") && !strings.HasPrefix(upper, "G1 ") &&
+			!strings.HasPrefix(upper, "G0\t") && !strings.HasPrefix(upper, "G1\t") &&
+			upper != "G0" && upper != "G1" {
+			result = append(result, cumulative)
+			continue
+		}
+
+		// Find E parameter.
+		eVal := math.NaN()
+		for _, field := range strings.Fields(line)[1:] {
+			if len(field) > 1 && (field[0] == 'E' || field[0] == 'e') {
+				if v, err := strconv.ParseFloat(field[1:], 64); err == nil {
+					eVal = v
+				}
+			}
+		}
+
+		if !math.IsNaN(eVal) {
+			if relative {
+				if eVal > 0 {
+					cumulative += eVal
+				}
+			} else {
+				if eVal > lastAbsE {
+					cumulative += eVal - lastAbsE
+				}
+				lastAbsE = eVal
+			}
+		}
+
+		result = append(result, cumulative)
+	}
+
+	return result, scanner.Err()
 }
 
 // extractGCodeMeta reads the first few lines of a gcode file to extract slicer metadata.

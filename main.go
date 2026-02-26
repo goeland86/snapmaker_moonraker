@@ -136,7 +136,7 @@ func main() {
 		if spoolmanMgr != nil {
 			snap := s.Snapshot()
 			if snap.PrinterState == "printing" && spoolmanMgr.IsTracking() {
-				spoolmanMgr.ReportUsage(snap.PrintProgress)
+				spoolmanMgr.ReportUsage(snap.CurrentLine)
 			}
 			// Detect transition away from printing to stop tracking.
 			if prevPrinterState == "printing" && snap.PrinterState != "printing" {

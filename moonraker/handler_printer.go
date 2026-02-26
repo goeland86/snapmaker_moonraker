@@ -2,10 +2,12 @@ package moonraker
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
+
+	"github.com/john/snapmaker_moonraker/files"
 )
 
 // registerPrinterHandlers sets up /printer/* routes.
@@ -193,22 +195,17 @@ func (s *Server) startSpoolmanTracking(filename string) {
 		return
 	}
 
-	meta, err := s.fileManager.GetMetadata("gcodes", filename)
+	gcodeDir := s.fileManager.GetRootPath("gcodes")
+	fullPath := filepath.Join(gcodeDir, filepath.FromSlash(filename))
+
+	filamentByLine, err := files.ParseFilamentByLine(fullPath)
 	if err != nil {
+		log.Printf("Spoolman: failed to parse filament data from %s: %v", filename, err)
 		return
 	}
 
-	var totalMM float64
-	switch v := meta["filament_total"].(type) {
-	case float64:
-		totalMM = v
-	case string:
-		// Fallback if not yet parsed as float
-		fmt.Sscanf(v, "%f", &totalMM)
-	}
-
-	if totalMM > 0 {
-		s.spoolman.StartTracking(totalMM)
+	if len(filamentByLine) > 0 && filamentByLine[len(filamentByLine)-1] > 0 {
+		s.spoolman.StartTracking(filamentByLine)
 	}
 }
 

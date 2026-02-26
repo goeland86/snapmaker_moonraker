@@ -321,7 +321,8 @@ func ExecuteGCode(conn net.Conn, gcode string, timeout time.Duration) (string, e
 			if len(p.Data) < 1 {
 				return "", nil
 			}
-			if p.Data[0] != 0 {
+			// Code 15 is returned for motion commands (G0, G1, G28) and indicates success.
+			if p.Data[0] != 0 && p.Data[0] != 15 {
 				return "", fmt.Errorf("gcode execution failed with result code %d", p.Data[0])
 			}
 			if len(p.Data) > 1 {
@@ -712,8 +713,49 @@ func Home(conn net.Conn, timeout time.Duration) error {
 	return SendCommand(conn, 0x01, 0x35, data, timeout)
 }
 
+// StartScreenPrint sends the "start screen print" command (0xB0/0x08) to the
+// screen MCU after a file has been uploaded, triggering the printer to begin printing.
+// headType: 0=FDM printing, 1=CNC, 2=laser.
+func StartScreenPrint(conn net.Conn, filename string, md5hex string, headType byte, timeout time.Duration) error {
+	data := bytes.Buffer{}
+	data.WriteByte(headType)
+	writeString(&data, filename)
+	writeString(&data, md5hex)
+
+	seq := nextSequence()
+
+	conn.SetWriteDeadline(time.Now().Add(timeout))
+	_, err := conn.Write(Packet{
+		ReceiverID: 2,
+		SenderID:   0,
+		Attribute:  0,
+		Sequence:   seq,
+		CommandSet: 0xb0,
+		CommandID:  0x08,
+		Data:       data.Bytes(),
+	}.Encode())
+
+	if err != nil {
+		return err
+	}
+
+	for {
+		p, err := Read(conn, timeout)
+		if err != nil {
+			return err
+		}
+		if p.Sequence == seq && p.CommandSet == 0xb0 && p.CommandID == 0x08 {
+			if len(p.Data) >= 1 && p.Data[0] != 0 {
+				return fmt.Errorf("startScreenPrint failed: code %d", p.Data[0])
+			}
+			return nil
+		}
+	}
+}
+
 // StartUpload uploads gcode data to the printer via the SACP file transfer protocol.
-func StartUpload(conn net.Conn, filename string, gcode []byte, timeout time.Duration) error {
+// Returns the MD5 hex string of the uploaded data (needed for StartScreenPrint).
+func StartUpload(conn net.Conn, filename string, gcode []byte, timeout time.Duration) (string, error) {
 	packageCount := uint16((len(gcode) / DataLen) + 1)
 	md5hash := md5.Sum(gcode)
 
@@ -735,17 +777,19 @@ func StartUpload(conn net.Conn, filename string, gcode []byte, timeout time.Dura
 	}.Encode())
 
 	if err != nil {
-		return err
+		return "", err
 	}
+
+	md5hex := hex.EncodeToString(md5hash[:])
 
 	for {
 		conn.SetReadDeadline(time.Now().Add(timeout))
 		p, err := Read(conn, 10*time.Second)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if p == nil {
-			return ErrInvalidSize
+			return "", ErrInvalidSize
 		}
 
 		switch {
@@ -755,11 +799,11 @@ func StartUpload(conn net.Conn, filename string, gcode []byte, timeout time.Dura
 		case p.CommandSet == 0xb0 && p.CommandID == 1:
 			// Printer requesting a data chunk
 			if len(p.Data) < 4 {
-				return ErrInvalidSize
+				return "", ErrInvalidSize
 			}
 			md5Len := binary.LittleEndian.Uint16(p.Data[:2])
 			if len(p.Data) < 2+int(md5Len)+2 {
-				return ErrInvalidSize
+				return "", ErrInvalidSize
 			}
 
 			pkgRequested := binary.LittleEndian.Uint16(p.Data[2+md5Len : 2+md5Len+2])
@@ -792,13 +836,13 @@ func StartUpload(conn net.Conn, filename string, gcode []byte, timeout time.Dura
 			}.Encode())
 
 			if err != nil {
-				return err
+				return "", err
 			}
 
 		case p.CommandSet == 0xb0 && p.CommandID == 2:
 			// Upload complete
 			if len(p.Data) == 1 && p.Data[0] == 0 {
-				return nil
+				return md5hex, nil
 			}
 			log.Printf("Unexpected upload completion data: %v", p.Data)
 

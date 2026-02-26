@@ -1069,3 +1069,100 @@ Accept SACP result code 15 as success for motion commands (G0, G1, G28) — prev
 | `printer/state.go` | Add `CurrentLine` field, `uint32` in `floatFromMap` |
 | `moonraker/handler_printer.go` | Use `ParseFilamentByLine` for Spoolman tracking |
 | `main.go` | Pass `CurrentLine` to `ReportUsage` |
+
+---
+
+# Session Log - 2026-02-26
+
+## Objective
+Fix uploaded files not appearing on J1S HMI touchscreen, and enable auto-start printing from Mainsail.
+
+## Problems Identified & Solved
+
+### 1. Files Not Appearing on HMI — Three Root Causes
+
+**Root Cause A: State poller race condition**
+- During `Upload()`, the SACP connection was set to `nil` so the upload could use it directly
+- The state poller (running on a timer) saw `conn == nil`, pinged the printer (reachable), and called `Connect()` — opening a **second** TCP connection to port 8888 while the upload was still in progress on the first
+- This competing connection confused the printer's SACP state machine
+- **Fix**: Added `uploading bool` flag to `Client` struct, set during `Upload()`. `IsUploading()` method lets the state poller skip reconnection attempts.
+
+**Root Cause B: Missing second SACP disconnect**
+- sm2uploader sends the SACP disconnect command (0x01/0x06 to screen MCU) **twice** after upload: once inside the upload function (deferred), once from the caller
+- Our code only sent it once
+- The double disconnect is what triggers the HMI to finalize and index the uploaded file
+- **Fix**: First disconnect sent inside `StartUpload()` immediately after receiving 0xb0/0x02 (upload complete). Second disconnect sent from `Upload()` caller.
+
+**Root Cause C: Subdirectory paths in upload filename**
+- Mainsail can send filenames like `subdir/file.gcode` via the Moonraker API
+- The SACP upload passed this path as-is to the printer
+- The J1S stores files flat (no subdirectories) — the HMI couldn't index files with path separators
+- **Fix**: `filepath.Base(filename)` strips any directory path before SACP upload.
+
+### 2. V1 Header Format Required for J1S
+
+The initial implementation used the V0 header format (`;header_type: 3dp`, `;machine: J1`, etc.). Research into SMFix revealed that the J1/J1S **always** requires the V1 format, which has completely different field names:
+- `;Version:1` required
+- `;Printer:Snapmaker J1` (not `;machine:`)
+- Per-extruder fields (nozzle size, material, temperature, retraction per extruder)
+- Separate coordinate axes (not tuple format)
+- No 1.07x time multiplier
+- No `;tool_head:` or `;header_type:` fields
+
+**Fix**: Added `isJ1Model()` dispatcher, `buildHeaderV1()` for J1/J1S, kept `buildHeaderV0()` for legacy models. Updated `metadata` struct with per-tool arrays for `filamentType[2]`, `nozzleDiameter[2]`, `retraction[2]`, `switchRetraction[2]`.
+
+### 3. StartScreenPrint (Auto-Start Printing)
+
+**Problem 1: Called on wrong connection**
+- Initially tried calling `StartScreenPrint` (0xB0/0x08) on a fresh connection after reconnecting
+- The reconnect after upload timed out (printer needs time after double disconnect)
+- Even when it worked, the command returned code 200 (file not yet indexed)
+- **Fix**: Call `StartScreenPrint` on the **same connection** as the upload, right after upload completes and before disconnects. The screen MCU just stored the file, so it knows about it.
+
+**Problem 2: Read loop hung forever**
+- `StartScreenPrint` waited for a response packet matching 0xB0/0x08
+- After upload, the printer sends subscription push packets that the raw read loop consumed endlessly without finding the matching response
+- The command itself worked (print started on the machine!) but the response was lost in the noise
+- **Fix**: Made `StartScreenPrint` fire-and-forget — sends the command packet, doesn't wait for response.
+
+### 4. Mainsail Disconnecting During Upload
+
+- When `Upload()` set `conn = nil`, the next state poller cycle reported `Connected: false`
+- Mainsail interpreted this as "Klipper disconnected" and showed a disconnect UI
+- **Fix**: State poller now checks `IsUploading()` — during upload, it keeps broadcasting `Connected: true` with the last known state, so Mainsail stays connected throughout.
+
+## Final Upload Sequence
+
+```
+1. Stop PacketRouter (exclusive TCP access for upload)
+2. Set uploading=true (blocks state poller reconnection)
+3. Process gcode (V1 header for J1S, tool remapping, nozzle shutoff)
+4. filepath.Base(filename) — strip subdirectory paths
+5. StartUpload() — send file chunks via SACP
+6. On 0xb0/0x02 completion: send DISCONNECT #1 (inside StartUpload)
+7. StartScreenPrint — fire-and-forget on same connection
+8. Send DISCONNECT #2 (from Upload caller)
+9. Close TCP
+10. Wait 3 seconds for HMI indexing
+11. Reconnect (if timeout, state poller retries)
+12. Set uploading=false
+```
+
+## Testing Results
+
+- **File appears on HMI**: Confirmed working after all three fixes
+- **Print auto-starts**: Confirmed — StartScreenPrint on same connection triggers print
+- **Mainsail stays connected**: Deployed but needs retest (print was already running)
+
+## Commits
+
+- `254790a` — Fix HMI file visibility and auto-start print after upload
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| `gcode/process.go` | V1 header for J1S, per-extruder metadata, improved V0 header field names |
+| `printer/client.go` | `uploading` flag, `IsUploading()`, rewritten `Upload()` with double disconnect + fire-and-forget StartScreenPrint |
+| `printer/state.go` | Poller keeps `Connected=true` during upload, skips reconnection |
+| `sacp/sacp.go` | First disconnect inside `StartUpload`, fire-and-forget `StartScreenPrint` |

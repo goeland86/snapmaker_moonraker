@@ -591,29 +591,46 @@ func (c *Client) Upload(filename string, data []byte) error {
 		return fmt.Errorf("upload failed: %w", err)
 	}
 
-	// Auto-start the print (fire-and-forget: send command, don't wait for response
-	// because subscription push packets make the raw read loop unreliable).
-	// StartUpload already sent the first disconnect; this must go before the second.
-	log.Printf("Starting print: filename=%q md5=%s", uploadName, md5hex)
-	if spErr := sacp.StartScreenPrint(conn, uploadName, md5hex, 0, sacpTimeout); spErr != nil {
-		log.Printf("StartScreenPrint send failed: %v", spErr)
-	}
-
-	// Second disconnect from the caller (first was inside StartUpload).
-	log.Printf("Sending second disconnect to finalize HMI indexing...")
+	// StartUpload sent the first disconnect (inside, after 0xb0/0x02).
+	// Send the second disconnect to match sm2uploader's double-disconnect pattern.
+	log.Printf("Sending second disconnect...")
 	sacp.Disconnect(conn, sacpTimeout)
 	conn.Close()
 
 	// Wait for the HMI to index the file before reconnecting.
+	log.Printf("Waiting for HMI to index file...")
 	time.Sleep(3 * time.Second)
 
 	// Reconnect with a fresh SACP connection.
 	log.Printf("Reconnecting after upload...")
 	if err := c.Connect(); err != nil {
 		log.Printf("Reconnect after upload failed: %v (state poller will retry)", err)
+		return nil // Upload succeeded, print start will be skipped
 	}
 
+	// Start the print on the fresh connection. The file is now indexed by the HMI.
+	log.Printf("Starting print: filename=%q md5=%s", uploadName, md5hex)
+	c.startPrint(uploadName, md5hex)
+
 	return nil
+}
+
+// startPrint sends the StartScreenPrint command on the current connection.
+func (c *Client) startPrint(filename, md5hex string) {
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+
+	if conn == nil {
+		log.Printf("StartScreenPrint skipped: not connected")
+		return
+	}
+
+	if err := sacp.StartScreenPrint(conn, filename, md5hex, 0, sacpTimeout); err != nil {
+		log.Printf("StartScreenPrint send failed: %v", err)
+	} else {
+		log.Printf("StartScreenPrint sent successfully")
+	}
 }
 
 // reconnectAfterUpload attempts to re-establish the SACP connection in the background.

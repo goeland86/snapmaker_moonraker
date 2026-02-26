@@ -177,10 +177,17 @@ func (s *Server) handlePrintStart(w http.ResponseWriter, r *http.Request) {
 		data, err := s.fileManager.ReadFile("gcodes", filename)
 		if err != nil {
 			log.Printf("Error reading file for print: %v", err)
-		} else if err := s.printerClient.Upload(filename, data); err != nil {
-			log.Printf("Error uploading to printer: %v", err)
 		} else {
-			s.startSpoolmanTracking(filename)
+			// Run upload in background so the RPC response returns immediately.
+			// Mainsail expects a fast response; status updates arrive via websocket
+			// notifications as the printer state changes (idle → printing).
+			go func() {
+				if err := s.printerClient.Upload(filename, data); err != nil {
+					log.Printf("Error uploading to printer: %v", err)
+				} else {
+					s.startSpoolmanTracking(filename)
+				}
+			}()
 		}
 	}
 

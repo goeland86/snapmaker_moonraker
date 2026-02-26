@@ -1166,3 +1166,78 @@ The initial implementation used the V0 header format (`;header_type: 3dp`, `;mac
 | `printer/client.go` | `uploading` flag, `IsUploading()`, rewritten `Upload()` with double disconnect + fire-and-forget StartScreenPrint |
 | `printer/state.go` | Poller keeps `Connected=true` during upload, skips reconnection |
 | `sacp/sacp.go` | First disconnect inside `StartUpload`, fire-and-forget `StartScreenPrint` |
+
+---
+
+# Session 13 — 2026-02-26 (continued)
+
+## Fix StartScreenPrint and Mainsail UI Blocking
+
+### Problem: Print Not Starting After Upload
+
+Files uploaded from Mainsail appeared on the HMI touchscreen but the print never started. The heartbeat subscription showed no status change — the printer stayed IDLE after upload.
+
+### Root Cause: StartScreenPrint Sent on Disconnected Session
+
+The upload flow was sending StartScreenPrint (0xB0/0x08) **after** the first SACP disconnect (0x01/0x06). The screen MCU had already dropped the session by the time the print command arrived.
+
+Previous broken sequence:
+1. Upload chunks → receive 0xb0/0x02 (upload complete)
+2. **Disconnect #1** (inside StartUpload) — screen drops session
+3. StartScreenPrint → **ignored** by screen MCU
+4. Disconnect #2 → close TCP
+
+### Key Discovery: sm2uploader Has No StartScreenPrint
+
+Research confirmed that `sm2uploader` (the reference SACP tool) is **upload-only** — it has no `StartScreenPrint` command at all. The `0xB0/0x08` command was verified from the **Snapmaker Luban** source code (`SacpTcpChannel.ts`), which sends it to `PeerId.SCREEN` (ReceiverID=2).
+
+### Fix: Send StartScreenPrint on Fresh Connection
+
+Restructured the upload flow to separate upload from print start:
+1. Upload + Disconnect #1 (inside StartUpload, for file finalization) — unchanged
+2. Disconnect #2 + close TCP — unchanged
+3. Wait 3s for HMI indexing — unchanged
+4. **Reconnect fresh SACP connection**
+5. **Send StartScreenPrint on the fresh connection** — NEW
+
+This works because the HMI has fully indexed the file by the time we reconnect, and the fresh connection has an active session.
+
+### Fix: Mainsail UI Blocking During Upload
+
+`handlePrintStart` was calling `Upload()` synchronously, blocking the `printer.print.start` RPC response for ~15 seconds (upload + disconnect + wait + reconnect). Mainsail's UI got stuck showing a loading state.
+
+**Fix**: Run the upload in a background goroutine and return the RPC response immediately. Mainsail picks up the print state transition (IDLE → PRINTING) via WebSocket status notifications from the heartbeat subscription.
+
+### Deployment Issue
+
+The service binary path is `/opt/snapmaker-moonraker/snapmaker_moonraker` (per systemd unit), not `/home/pi/snapmaker-moonraker`. Previous deploys via `scp` went to the wrong path and had no effect.
+
+## Updated Upload Sequence
+
+```
+1. Stop PacketRouter (exclusive TCP access for upload)
+2. Set uploading=true (blocks state poller reconnection)
+3. Process gcode (V1 header for J1S, tool remapping, nozzle shutoff)
+4. filepath.Base(filename) — strip subdirectory paths
+5. StartUpload() — send file chunks via SACP
+6. On 0xb0/0x02 completion: send DISCONNECT #1 (inside StartUpload)
+7. Send DISCONNECT #2 (from Upload caller)
+8. Close TCP
+9. Wait 3 seconds for HMI indexing
+10. Reconnect fresh SACP connection
+11. StartScreenPrint on fresh connection — print starts
+12. Set uploading=false
+```
+
+## Testing Results
+
+- **Print starts**: Confirmed — heartbeat shows IDLE → PRINTING after StartScreenPrint
+- **Mainsail UI**: Non-blocking RPC deployed, needs retest on next print
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| `printer/client.go` | `startPrint()` method, Upload() sends StartScreenPrint on fresh connection after reconnect |
+| `sacp/sacp.go` | Updated comment on first disconnect in StartUpload |
+| `moonraker/handler_printer.go` | `handlePrintStart` runs upload in background goroutine |

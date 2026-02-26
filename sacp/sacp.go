@@ -827,8 +827,8 @@ func StartUpload(conn net.Conn, filename string, gcode []byte, timeout time.Dura
 			}
 
 		case p.CommandSet == 0xb0 && p.CommandID == 2:
-			// Upload complete — send first disconnect immediately, matching
-			// sm2uploader's deferred Disconnect() inside SACP_start_upload.
+			// Upload complete — send first disconnect to signal the HMI to
+			// finalize and index the file (matches sm2uploader pattern).
 			if len(p.Data) == 1 && p.Data[0] == 0 {
 				Disconnect(conn, timeout)
 				return md5hex, nil

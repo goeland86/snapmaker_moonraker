@@ -29,6 +29,7 @@ type metadata struct {
 	switchRetraction [2]float64
 	maxToolNum       int
 	lastToolLine     [2]int // last line index where each (remapped) tool is active
+	thumbnail        string // data URI (data:image/png;base64,...) extracted from slicer thumbnails
 }
 
 // Process takes raw gcode data and a printer model string, and returns
@@ -49,10 +50,19 @@ func Process(data []byte, printerModel string) []byte {
 	// Normalize line endings.
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	content = strings.ReplaceAll(content, "\r", "\n")
+
+	// Extract thumbnail before line splitting (needs raw multi-line blocks).
+	thumbnail := extractThumbnail(content)
+
 	lines := strings.Split(content, "\n")
 
 	// Pass 1: scan for metadata.
 	meta := scanMetadata(lines)
+	meta.thumbnail = thumbnail
+
+	if thumbnail != "" {
+		log.Printf("gcode: extracted thumbnail (%d bytes)", len(thumbnail))
+	}
 
 	log.Printf("gcode: scanned %d lines — tools=%v maxTool=T%d temps=[%.0f,%.0f] bed=%.0f filament=[%.1f,%.1f]mm est=%.0fs",
 		len(lines), meta.toolsUsed, meta.maxToolNum,
@@ -490,7 +500,11 @@ func buildHeaderV1(meta *metadata, totalLines int) string {
 	b.WriteString(";Version:1\n")
 	b.WriteString(";Printer:Snapmaker J1\n")
 	fmt.Fprintf(&b, ";Estimated Print Time:%d\n", int(meta.estimatedTime))
-	fmt.Fprintf(&b, ";Lines:%d\n", totalLines+v1HeaderLines)
+	headerLines := v1HeaderLines
+	if meta.thumbnail != "" {
+		headerLines++
+	}
+	fmt.Fprintf(&b, ";Lines:%d\n", totalLines+headerLines)
 	fmt.Fprintf(&b, ";Extruder Mode:%s\n", extruderMode)
 
 	// Per-extruder fields.
@@ -524,6 +538,9 @@ func buildHeaderV1(meta *metadata, totalLines int) string {
 	fmt.Fprintf(&b, ";Work Range - Max Y:%.4f\n", meta.maxY)
 	fmt.Fprintf(&b, ";Work Range - Max Z:%.4f\n", meta.maxZ)
 	fmt.Fprintf(&b, ";Extruder(s) Used:%d\n", extrudersUsed)
+	if meta.thumbnail != "" {
+		fmt.Fprintf(&b, ";Thumbnail:%s\n", meta.thumbnail)
+	}
 	b.WriteString(";Header End\n")
 
 	return b.String()
@@ -598,6 +615,9 @@ func buildHeaderV0(meta *metadata, printerModel string) string {
 	fmt.Fprintf(&b, ";Extruder(s) Used = %d\n", extruderMask)
 	fmt.Fprintf(&b, ";matierial_weight: %.4f\n", weightG)     // deliberate typo matches firmware
 	fmt.Fprintf(&b, ";matierial_length: %.5f\n", totalFilamentM) // deliberate typo matches firmware
+	if meta.thumbnail != "" {
+		fmt.Fprintf(&b, ";thumbnail: %s\n", meta.thumbnail)
+	}
 	b.WriteString(";Header End\n")
 
 	return b.String()
@@ -640,4 +660,66 @@ func parseDuration(s string) float64 {
 	}
 
 	return total
+}
+
+// extractThumbnail scans raw gcode content for PrusaSlicer/OrcaSlicer thumbnail
+// blocks, takes the last (largest) one, strips comment prefixes, concatenates
+// the base64 data, and returns a data URI string. Returns "" if no thumbnail found.
+func extractThumbnail(content string) string {
+	var lastBlock string
+
+	for {
+		startMarker := "; thumbnail begin"
+		startIdx := strings.Index(content, startMarker)
+		if startIdx < 0 {
+			break
+		}
+
+		endMarker := "; thumbnail end"
+		endIdx := strings.Index(content[startIdx:], endMarker)
+		if endIdx < 0 {
+			break
+		}
+		endIdx += startIdx
+
+		// Extract the block between the markers.
+		// Find end of the "thumbnail begin" line.
+		blockStart := strings.IndexByte(content[startIdx:], '\n')
+		if blockStart < 0 {
+			break
+		}
+		blockStart += startIdx + 1
+
+		block := content[blockStart:endIdx]
+		lastBlock = block
+
+		// Advance past this block to find more.
+		content = content[endIdx+len(endMarker):]
+	}
+
+	if lastBlock == "" {
+		return ""
+	}
+
+	// Strip "; " prefix from each line and concatenate base64 data.
+	var b64 strings.Builder
+	for _, line := range strings.Split(lastBlock, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Strip leading "; " or ";" prefix.
+		line = strings.TrimPrefix(line, "; ")
+		line = strings.TrimPrefix(line, ";")
+		line = strings.TrimSpace(line)
+		if line != "" {
+			b64.WriteString(line)
+		}
+	}
+
+	if b64.Len() == 0 {
+		return ""
+	}
+
+	return "data:image/png;base64," + b64.String()
 }

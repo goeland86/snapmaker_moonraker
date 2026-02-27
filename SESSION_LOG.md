@@ -1294,3 +1294,50 @@ Updated both HTTP handlers (`handler_printer.go`) and WebSocket RPC handlers (`w
 
 - **Cancel**: Confirmed working — clicked Cancel in Mainsail, printer immediately transitioned PRINTING → STOPPING. The SACP command ACK times out (response consumed by subscription handler) but the command itself succeeds; heartbeat confirms the state change.
 - **Pause/Resume**: Uses same `sendCommand` pattern (0xAC/0x04 and 0xAC/0x05), expected to work identically. Not yet tested live.
+
+---
+
+# Session 15 — 2026-02-27
+
+## Add Thumbnail Support for Snapmaker J1S HMI
+
+### Problem
+
+GCode files sliced with PrusaSlicer contain embedded PNG thumbnails that display correctly in Mainsail. However, when the file is uploaded to the J1S via SACP, the thumbnail doesn't appear on the HMI touchscreen.
+
+**Root cause**: PrusaSlicer embeds thumbnails as multi-line base64 blocks in GCode comments, but the J1S HMI expects a single-line data URI inside the Snapmaker header. The GCode post-processor (`gcode/process.go`) built the header but ignored thumbnails entirely.
+
+### Format Difference
+
+PrusaSlicer format (multi-line, outside header):
+```
+; thumbnail begin 300x300 55700
+; iVBORw0KGgo...
+; ...more base64 lines...
+; thumbnail end
+```
+
+Snapmaker V1 format (single line, inside header):
+```
+;Thumbnail:data:image/png;base64,iVBORw0KGgo...concatenated...
+```
+
+### Implementation
+
+1. **`metadata.thumbnail` field** — stores the converted data URI string
+
+2. **`extractThumbnail(content string) string`** — scans raw GCode content for PrusaSlicer/OrcaSlicer thumbnail blocks (`; thumbnail begin` ... `; thumbnail end`), takes the last/largest one, strips `; ` comment prefixes from each line, concatenates the base64, and returns `data:image/png;base64,...`. Runs on the raw content in `Process()` before line splitting (matches SMFix `convertThumbnail()` approach).
+
+3. **`buildHeaderV1()`** — emits `;Thumbnail:<data URI>` just before `;Header End` when present. Increments `;Lines:` count by 1 to account for the extra header line.
+
+4. **`buildHeaderV0()`** — emits `;thumbnail: <data URI>` just before `;Header End` (lowercase, with space — matches V0 convention).
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| `gcode/process.go` | Added `thumbnail` field to metadata, `extractThumbnail()` function, thumbnail emission in both V1 and V0 headers |
+
+## Commits
+
+- `9d420ae` — Add thumbnail extraction for Snapmaker HMI display

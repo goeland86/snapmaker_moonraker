@@ -1546,3 +1546,9 @@ Moonraker API confirmed: `virtual_sdcard.progress = 0.3247` (32.5%). Mainsail sh
 | `main.go` | Print state file persistence; restore totalLines + Spoolman tracking on restart |
 | `moonraker/handler_printer.go` | Export `StartSpoolmanTracking()` |
 | `moonraker/websocket.go` | Updated call to exported `StartSpoolmanTracking()` |
+
+### Git
+
+- `144511c` "Fix print progress and add restart recovery for active prints"
+- `8c1eddf` "Update Claude Code local settings with accumulated permissions"
+- Both pushed to `origin/main`

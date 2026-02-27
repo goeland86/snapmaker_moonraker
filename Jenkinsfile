@@ -4,12 +4,29 @@ pipeline {
         GOFLAGS = '-trimpath'
     }
     stages {
-        stage('Build Go Binary') {
+        stage('Build Go Binaries') {
             steps {
                 sh '''
+                    echo "==> Building ARM (RPi) binary..."
                     GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 \
                         go build -ldflags="-s -w" -o snapmaker_moonraker-armv7 .
+
+                    echo "==> Building Linux x86_64 binary..."
+                    GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+                        go build -ldflags="-s -w" -o snapmaker_moonraker_Linux.bin .
+
+                    echo "==> Building Windows x86_64 binary..."
+                    GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+                        go build -ldflags="-s -w" -o snapmaker_moonraker_Win.exe .
+
+                    echo "==> Building macOS ARM64 binary..."
+                    GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 \
+                        go build -ldflags="-s -w" -o snapmaker_moonraker_Mac.bin .
+
                     file snapmaker_moonraker-armv7
+                    file snapmaker_moonraker_Linux.bin
+                    file snapmaker_moonraker_Win.exe
+                    file snapmaker_moonraker_Mac.bin
                 '''
             }
         }
@@ -70,7 +87,10 @@ pipeline {
                     gh release upload "${TAG_NAME}" \
                         --repo goeland86/snapmaker_moonraker \
                         --clobber \
-                        snapmaker-moonraker-rpi3-*.img.xz
+                        snapmaker-moonraker-rpi3-*.img.xz \
+                        snapmaker_moonraker_Linux.bin \
+                        snapmaker_moonraker_Win.exe \
+                        snapmaker_moonraker_Mac.bin
                 '''
             }
         }

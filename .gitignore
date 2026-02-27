@@ -1,6 +1,9 @@
 snapmaker_moonraker
 snapmaker-moonraker
 snapmaker_moonraker-armv7
+snapmaker_moonraker_Linux.bin
+snapmaker_moonraker_Win.exe
+snapmaker_moonraker_Mac.bin
 gcodes/
 deploy.sh
 nul

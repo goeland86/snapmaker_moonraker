@@ -1442,3 +1442,37 @@ Mainsail's config file panel showed "No configuration directory found" and no co
 ### Result
 
 Mainsail config panel shows all config files (crowsnest.conf, moonraker.conf, printer.cfg, snapmaker-moonraker.yaml, etc.) and allows editing them directly from the web UI.
+
+---
+
+## Session 17 — 2026-02-27: Upload Reconnect Fix, Release Notes, Cross-Platform Builds
+
+### Upload Reconnect Fix
+
+The J1S sometimes needs more than 3 seconds after the SACP double-disconnect before accepting new connections. The single reconnect attempt would timeout, causing `startPrint` to be skipped — the file uploaded but never started printing.
+
+**Fix**: `printer/client.go` — Reconnect after upload now retries up to 5 times with 2-second gaps between attempts, giving the J1S up to ~20 extra seconds to become ready.
+
+### Release Notes File
+
+Created `Release_Notes.md` consolidating all release notes from v0.0.1 through v0.1.0. Updated `Jenkinsfile` to extract notes for the tagged version from this file using awk, falling back to `--generate-notes` if no entry exists. Workflow is now: update Release_Notes.md → commit → tag → push → Jenkins creates release with correct notes.
+
+### Cross-Platform Builds
+
+Added Linux x86_64, Windows x86_64, and macOS ARM64 builds to the Jenkins pipeline alongside the existing ARM RPi binary. All three are uploaded as GitHub release artifacts.
+
+| Target | Filename |
+|--------|----------|
+| RPi (ARM v7) | `snapmaker_moonraker-armv7` |
+| Linux x86_64 | `snapmaker_moonraker_Linux.bin` |
+| Windows x86_64 | `snapmaker_moonraker_Win.exe` |
+| macOS ARM64 | `snapmaker_moonraker_Mac.bin` |
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `printer/client.go` | Reconnect after upload retries up to 5 times |
+| `Release_Notes.md` | New — consolidated release notes for all versions |
+| `Jenkinsfile` | Extract notes from Release_Notes.md; build Linux/Windows/Mac binaries |
+| `.gitignore` | Added cross-platform binary names |

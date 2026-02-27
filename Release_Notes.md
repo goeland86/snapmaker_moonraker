@@ -1,5 +1,28 @@
 # Release Notes
 
+## v0.1.1 — 2026-02-27
+
+### Bug Fixes
+
+- **Fix print start after upload** — SACP reconnect after upload now retries up to 5 times with 2-second gaps. The J1S sometimes needs more than 3 seconds after the double-disconnect before accepting new connections; the single attempt would timeout, causing the file to upload but never start printing.
+
+### Build & Release
+
+- **Cross-platform binaries** — Jenkins now builds and uploads Linux x86_64, Windows x86_64, and macOS ARM64 binaries alongside the RPi image
+- **Release notes from file** — Jenkins extracts release notes from `Release_Notes.md` instead of auto-generating them
+
+### Changes Since v0.1.0
+
+| Commit | Description |
+|--------|-------------|
+| `f03b186` | Fix print start after upload by retrying SACP reconnect |
+| `af04cc2` | Add Release_Notes.md and use it in Jenkins pipeline |
+| `2fd600c` | Build cross-platform binaries and upload to GitHub releases |
+
+**Full Changelog**: https://github.com/goeland86/snapmaker_moonraker/compare/v0.1.0...v0.1.1
+
+---
+
 ## v0.1.0 — 2026-02-27
 
 First minor release — the bridge is now fully functional with Mainsail, Obico, and Spoolman for the Snapmaker J1S.

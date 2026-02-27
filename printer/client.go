@@ -612,15 +612,25 @@ func (c *Client) Upload(filename string, data []byte) error {
 	sacp.Disconnect(conn, sacpTimeout)
 	conn.Close()
 
-	// Wait for the HMI to index the file before reconnecting.
+	// Wait for the HMI to index the file, then reconnect with retries.
 	log.Printf("Waiting for HMI to index file...")
 	time.Sleep(3 * time.Second)
 
-	// Reconnect with a fresh SACP connection.
-	log.Printf("Reconnecting after upload...")
-	if err := c.Connect(); err != nil {
-		log.Printf("Reconnect after upload failed: %v (state poller will retry)", err)
-		return nil // Upload succeeded, print start will be skipped
+	var connected bool
+	for attempt := 1; attempt <= 5; attempt++ {
+		log.Printf("Reconnecting after upload (attempt %d/5)...", attempt)
+		if err := c.Connect(); err != nil {
+			log.Printf("Reconnect attempt %d failed: %v", attempt, err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		connected = true
+		break
+	}
+
+	if !connected {
+		log.Printf("All reconnect attempts failed — state poller will retry")
+		return nil
 	}
 
 	// Start the print on the fresh connection. The file is now indexed by the HMI.

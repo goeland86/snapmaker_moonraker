@@ -130,11 +130,33 @@ func main() {
 	// Start state poller.
 	var prevPrinterState string
 	poller := printer.NewStatePoller(pc, state, cfg.Printer.PollInterval, func(s *printer.State) {
+		snap := s.Snapshot()
 		server.Hub().BroadcastStatusUpdate(s)
+
+		// History tracking: record print start/finish.
+		// Create a job when transitioning to printing, or when already printing
+		// but no job exists yet (e.g., filename arrived late from SACP query).
+		if snap.PrinterState == "printing" && snap.PrintFileName != "" && historyMgr.GetCurrentJob() == nil {
+			historyMgr.StartJob(snap.PrintFileName, history.JobMeta{})
+			server.Hub().BroadcastHistoryChanged("added", historyMgr.GetCurrentJob())
+			log.Printf("History: started job for %s", snap.PrintFileName)
+		}
+		if prevPrinterState == "printing" && snap.PrinterState != "printing" && snap.PrinterState != "paused" {
+			var status history.JobStatus
+			switch snap.PrinterState {
+			case "idle":
+				status = history.StatusCompleted
+			default:
+				status = history.StatusCancelled
+			}
+			if job := historyMgr.FinishJob(status, snap.PrintDuration, 0); job != nil {
+				server.Hub().BroadcastHistoryChanged("finished", job)
+				log.Printf("History: finished job %s (%s)", job.Filename, job.Status)
+			}
+		}
 
 		// Spoolman filament usage tracking.
 		if spoolmanMgr != nil {
-			snap := s.Snapshot()
 			if snap.PrinterState == "printing" && spoolmanMgr.IsTracking() {
 				spoolmanMgr.ReportUsage(snap.CurrentLine)
 			}
@@ -142,8 +164,9 @@ func main() {
 			if prevPrinterState == "printing" && snap.PrinterState != "printing" {
 				spoolmanMgr.StopTracking()
 			}
-			prevPrinterState = snap.PrinterState
 		}
+
+		prevPrinterState = snap.PrinterState
 	})
 	poller.Start()
 

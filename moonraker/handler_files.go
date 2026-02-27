@@ -57,7 +57,11 @@ func (s *Server) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
 	filename := r.URL.Query().Get("filename")
 	if filename == "" {
 		writeJSON(w, map[string]interface{}{
-			"result": map[string]interface{}{},
+			"result": map[string]interface{}{
+				"filename": "",
+				"size":     0,
+				"modified": float64(0),
+			},
 		})
 		return
 	}
@@ -70,7 +74,7 @@ func (s *Server) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
 			"result": map[string]interface{}{
 				"filename": filename,
 				"size":     0,
-				"modified": 0,
+				"modified": float64(0),
 			},
 		})
 		return

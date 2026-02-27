@@ -1340,4 +1340,55 @@ Snapmaker V1 format (single line, inside header):
 
 ## Commits
 
-- `9d420ae` — Add thumbnail extraction for Snapmaker HMI display
+- `0df3530` — Add thumbnail extraction for Snapmaker HMI display
+
+---
+
+## Fix Moonraker-Obico Print Status Monitoring
+
+### Problem
+
+Moonraker-obico was not monitoring prints. The obico server showed snapshots but no print status, progress, or events.
+
+### Root Cause: Two Issues
+
+**1. `KeyError: 'size'` crash in obico**
+
+When a print started, obico called `GET /server/files/metadata?filename=<name>` to get file info. Two paths returned responses missing the `size` field:
+
+- **HTTP handler**: empty filename → returned `{"result": {}}` (no `size`)
+- **WebSocket handler**: file not found or empty filename → returned `{}` (no `size`)
+
+Obico's `find_obico_g_code_file_id()` accessed `file_metadata['size']` and crashed with `KeyError`. This happened repeatedly because the error prevented `current_print_ts` from being set, causing `set_current_print()` to be called on every status update.
+
+The empty filename occurred because `PrintFileName` is populated asynchronously via SACP query (`queryFileInfo()`) — on the first status poll after a print starts, the filename hasn't arrived yet.
+
+**2. Empty job history**
+
+The `history.Manager` had `StartJob()`/`FinishJob()` methods but they were never called. Obico's `find_most_recent_job()` always returned `None`, so `current_print_ts` stayed `None` indefinitely, causing the repeated `set_current_print()` loop even after the `KeyError` was fixed.
+
+### Fixes
+
+**Metadata endpoints** — both HTTP and WebSocket handlers now always return `size` and `modified` fields, even for empty/missing filenames:
+```json
+{"result": {"filename": "", "size": 0, "modified": 0}}
+```
+
+**Print job history tracking** — the state poller callback in `main.go` now detects print state transitions and records them:
+- `→ printing` (with filename): calls `historyMgr.StartJob()`, broadcasts `notify_history_changed`
+- `printing →` idle/error: calls `historyMgr.FinishJob()`, broadcasts `notify_history_changed`
+- Handles late filename arrival: creates a job whenever printing with a filename and no current job exists
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `moonraker/handler_files.go` | HTTP metadata endpoint always returns `size` and `modified` |
+| `moonraker/websocket.go` | WebSocket metadata handler always returns `size` and `modified` |
+| `main.go` | State poller callback records print start/finish in history manager |
+
+### Testing Results
+
+- **History populated**: `GET /server/history/list` returns current in-progress job
+- **No more KeyError**: obico log shows no `KeyError: 'size'` after restart
+- **Print monitoring**: obico server now shows the ongoing print with status and progress

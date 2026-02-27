@@ -500,12 +500,20 @@ func (h *WSHub) handleEmergencyStop() interface{} {
 func (h *WSHub) handleFileMetadata(req *jsonRPCRequest) interface{} {
 	filename := extractStringParam(req.Params, "filename")
 	if filename == "" {
-		return map[string]interface{}{}
+		return map[string]interface{}{
+			"filename": "",
+			"size":     0,
+			"modified": float64(0),
+		}
 	}
 
 	meta, err := h.server.fileManager.GetMetadata("gcodes", filename)
 	if err != nil {
-		return map[string]interface{}{}
+		return map[string]interface{}{
+			"filename": filename,
+			"size":     0,
+			"modified": float64(0),
+		}
 	}
 	return meta
 }

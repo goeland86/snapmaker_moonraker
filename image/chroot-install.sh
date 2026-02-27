@@ -44,6 +44,7 @@ cd /
 
 echo "==> [chroot] Installing moonraker-obico..."
 git clone --depth 1 https://github.com/TheSpaghettiDetective/moonraker-obico.git /home/pi/moonraker-obico
+chmod +x /home/pi/moonraker-obico/moonraker_obico/bin/janus/precomplied/*/bin/janus
 python3 -m virtualenv --system-site-packages /home/pi/moonraker-obico-env
 /home/pi/moonraker-obico-env/bin/pip3 install -q -r /home/pi/moonraker-obico/requirements.txt
 chown -R 1000:1000 /home/pi/moonraker-obico /home/pi/moonraker-obico-env

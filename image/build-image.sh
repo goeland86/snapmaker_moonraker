@@ -149,14 +149,11 @@ cp -v "${SCRIPT_DIR}/rootfs/etc/systemd/system/moonraker-obico.service" \
 
 cp -v "${SCRIPT_DIR}/rootfs/etc/hostname" "${ROOT_MNT}/etc/hostname"
 
-# Install default config for pi user
-mkdir -p "${ROOT_MNT}/home/pi/.snapmaker"
-cp -v "${SCRIPT_DIR}/rootfs/home/pi/.snapmaker/config.yaml" \
-    "${ROOT_MNT}/home/pi/.snapmaker/config.yaml"
-
-# Install crowsnest config files
+# Install config files for printer_data
 mkdir -p "${ROOT_MNT}/home/pi/printer_data/config" \
          "${ROOT_MNT}/home/pi/printer_data/logs"
+cp -v "${SCRIPT_DIR}/rootfs/home/pi/printer_data/config/snapmaker-moonraker.yaml" \
+    "${ROOT_MNT}/home/pi/printer_data/config/snapmaker-moonraker.yaml"
 cp -v "${SCRIPT_DIR}/rootfs/home/pi/printer_data/config/crowsnest.conf" \
     "${ROOT_MNT}/home/pi/printer_data/config/crowsnest.conf"
 cp -v "${SCRIPT_DIR}/rootfs/home/pi/printer_data/config/crowsnest-usb.conf" \
@@ -166,8 +163,7 @@ cp -v "${SCRIPT_DIR}/rootfs/home/pi/printer_data/config/crowsnest-usb.conf" \
 mkdir -p "${ROOT_MNT}/home/pi/printer_data/gcodes"
 
 # Fix ownership (pi user is UID 1000 on RPi OS)
-chown -R 1000:1000 "${ROOT_MNT}/home/pi/.snapmaker" \
-    "${ROOT_MNT}/home/pi/printer_data"
+chown -R 1000:1000 "${ROOT_MNT}/home/pi/printer_data"
 
 # --- Step 9: Cleanup chroot mounts ---
 echo "==> Unmounting chroot filesystems..."

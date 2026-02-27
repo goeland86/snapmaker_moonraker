@@ -238,7 +238,11 @@ func (h *WSHub) handleRPC(client *WSClient, req *jsonRPCRequest) {
 		resp.Result = h.handleEmergencyStop()
 
 	case "server.files.list":
-		resp.Result = h.server.fileManager.ListFiles("gcodes")
+		root := extractStringParam(req.Params, "root")
+		if root == "" {
+			root = "gcodes"
+		}
+		resp.Result = h.server.fileManager.ListFiles(root)
 
 	case "server.config":
 		resp.Result = h.server.serverConfig()
@@ -522,7 +526,14 @@ func (h *WSHub) handleFilesGetDirectory(params interface{}) interface{} {
 	path := extractStringParam(params, "path")
 	root := extractStringParam(params, "root")
 	if root == "" {
-		root = "gcodes"
+		// Detect root from path prefix (e.g., path="config" or path="config/subdir").
+		if path == "config" || strings.HasPrefix(path, "config/") {
+			root = "config"
+			path = strings.TrimPrefix(path, "config")
+			path = strings.TrimPrefix(path, "/")
+		} else {
+			root = "gcodes"
+		}
 	}
 	return h.server.fileManager.GetDirectory(root, path)
 }
@@ -679,6 +690,11 @@ func (h *WSHub) handleFilesRoots() interface{} {
 		{
 			"name":        "gcodes",
 			"path":        h.server.fileManager.GetRootPath("gcodes"),
+			"permissions": "rw",
+		},
+		{
+			"name":        "config",
+			"path":        h.server.fileManager.GetRootPath("config"),
 			"permissions": "rw",
 		},
 	}

@@ -43,7 +43,7 @@ func (s *Server) serverInfo() map[string]interface{} {
 		"klippy_state":        "ready",
 		"components":          s.loadedComponents(),
 		"failed_components":   []string{},
-		"registered_directories": []string{"gcodes"},
+		"registered_directories": []string{"gcodes", "config"},
 		"warnings":            []string{},
 		"websocket_count":     len(s.wsHub.clients),
 		"moonraker_version":   "0.9.0-snapmaker",
@@ -77,21 +77,24 @@ func (s *Server) handleServerConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serverConfig() map[string]interface{} {
-	cfg := map[string]interface{}{
-		"config": map[string]interface{}{
-			"server": map[string]interface{}{
-				"host":               s.config.Server.Host,
-				"port":               s.config.Server.Port,
-				"klippy_uds_address": "/tmp/klippy_uds",
-			},
+	configMap := map[string]interface{}{
+		"server": map[string]interface{}{
+			"host":               s.config.Server.Host,
+			"port":               s.config.Server.Port,
+			"klippy_uds_address": "/tmp/klippy_uds",
+		},
+		"file_manager": map[string]interface{}{
+			"config_path": s.fileManager.GetRootPath("config"),
 		},
 	}
 	if s.spoolman != nil {
-		cfg["config"].(map[string]interface{})["spoolman"] = map[string]interface{}{
+		configMap["spoolman"] = map[string]interface{}{
 			"server": s.config.Spoolman.Server,
 		}
 	}
-	return cfg
+	return map[string]interface{}{
+		"config": configMap,
+	}
 }
 
 func (s *Server) handleServerRestart(w http.ResponseWriter, r *http.Request) {

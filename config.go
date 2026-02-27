@@ -37,6 +37,9 @@ type PrinterConfig struct {
 type FilesConfig struct {
 	// GCodeDir is the local directory for storing gcode files.
 	GCodeDir string `yaml:"gcode_dir"`
+	// ConfigDir is the directory for printer configuration files.
+	// Defaults to ../config relative to GCodeDir.
+	ConfigDir string `yaml:"config_dir"`
 }
 
 func DefaultConfig() *Config {

@@ -1392,3 +1392,53 @@ The `history.Manager` had `StartJob()`/`FinishJob()` methods but they were never
 - **History populated**: `GET /server/history/list` returns current in-progress job
 - **No more KeyError**: obico log shows no `KeyError: 'size'` after restart
 - **Print monitoring**: obico server now shows the ongoing print with status and progress
+
+---
+
+## Session 16 — 2026-02-27: Mainsail Config Panel + Config File Root
+
+### Problem
+
+Mainsail's config file panel showed "No configuration directory found" and no config files were listed. The bridge's configuration file was at `/home/pi/.snapmaker/config.yaml`, outside the Mainsail-visible directory tree.
+
+### Root Causes
+
+1. **Missing `config` file root** — `server/files/roots` and `server.info` only exposed the `gcodes` root. Mainsail requires a `config` root in `registered_directories`.
+2. **Missing `file_manager.config_path`** — `server.config` response lacked the `file_manager` section with `config_path` that Mainsail checks.
+3. **WebSocket `get_directory` didn't recognize `config` root** — Mainsail sends `server.files.get_directory` with `path=config` (no `root` param). The handler defaulted `root` to `"gcodes"` and tried to find a `config/` subdirectory inside `gcodes/`, returning an empty listing.
+
+### Changes
+
+**Add `config` file root support:**
+- `files/manager.go` — Added `configDir` field, updated `NewManager(gcodeDir, configDir)` signature, `GetRootPath("config")` returns config dir
+- `config.go` — Added `ConfigDir` field to `FilesConfig`
+- `main.go` — Derives config dir (default: sibling of gcode dir), passes to file manager, logs it
+
+**Expose config root in API responses:**
+- `moonraker/handler_server.go` — `serverInfo()` includes `"config"` in `registered_directories`; `serverConfig()` includes `file_manager.config_path`
+- `moonraker/handler_files.go` — HTTP `handleFileRoots` and `handleFileDirectory` include `config` root
+- `moonraker/websocket.go` — WS `handleFilesRoots` includes `config` root; `handleFilesGetDirectory` detects `config` in path param; `server.files.list` accepts `root` param
+
+**Move bridge config to printer_data/config:**
+- Config moved from `/home/pi/.snapmaker/config.yaml` to `/home/pi/printer_data/config/snapmaker-moonraker.yaml`
+- `image/rootfs/etc/systemd/system/snapmaker-moonraker.service` — Updated `ExecStart` and `WorkingDirectory`
+- `image/build-image.sh` — Updated to copy config from new location, removed `.snapmaker` directory
+- `image/rootfs/home/pi/printer_data/config/snapmaker-moonraker.yaml` — New config file location in image
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `files/manager.go` | Added `configDir` field, updated constructor and `GetRootPath` |
+| `config.go` | Added `ConfigDir` to `FilesConfig` |
+| `main.go` | Derive and pass config dir to file manager |
+| `moonraker/handler_server.go` | `registered_directories` includes `config`; `serverConfig` includes `file_manager.config_path` |
+| `moonraker/handler_files.go` | HTTP roots and directory handlers support `config` root |
+| `moonraker/websocket.go` | WS roots, directory, and file list handlers support `config` root |
+| `image/rootfs/.../snapmaker-moonraker.service` | New config path and working directory |
+| `image/build-image.sh` | Config copied from new location |
+| `image/rootfs/.../snapmaker-moonraker.yaml` | New config file in printer_data/config |
+
+### Result
+
+Mainsail config panel shows all config files (crowsnest.conf, moonraker.conf, printer.cfg, snapmaker-moonraker.yaml, etc.) and allows editing them directly from the web UI.

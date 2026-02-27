@@ -7,8 +7,8 @@ Wants=network-online.target
 Type=simple
 User=pi
 Group=pi
-WorkingDirectory=/home/pi/.snapmaker
-ExecStart=/opt/snapmaker-moonraker/snapmaker_moonraker -config /home/pi/.snapmaker/config.yaml
+WorkingDirectory=/home/pi/printer_data
+ExecStart=/opt/snapmaker-moonraker/snapmaker_moonraker -config /home/pi/printer_data/config/snapmaker-moonraker.yaml
 Restart=on-failure
 RestartSec=10
 

@@ -40,12 +40,23 @@ func main() {
 	log.Printf("Server: %s", cfg.ListenAddr())
 	log.Printf("Printer: %s (%s)", cfg.Printer.IP, cfg.Printer.Model)
 
+	// Resolve config directory (default: sibling of gcode dir).
+	configDir := cfg.Files.ConfigDir
+	if configDir == "" {
+		configDir = filepath.Join(filepath.Dir(cfg.Files.GCodeDir), "config")
+	}
+	if !filepath.IsAbs(configDir) {
+		dir, _ := os.Getwd()
+		configDir = filepath.Join(dir, configDir)
+	}
+
 	// Initialize file manager.
-	fm, err := files.NewManager(cfg.Files.GCodeDir)
+	fm, err := files.NewManager(cfg.Files.GCodeDir, configDir)
 	if err != nil {
 		log.Fatalf("Failed to initialize file manager: %v", err)
 	}
 	log.Printf("GCode directory: %s", cfg.Files.GCodeDir)
+	log.Printf("Config directory: %s", configDir)
 
 	// Initialize database (for Obico and other integrations).
 	dataDir := filepath.Join(filepath.Dir(cfg.Files.GCodeDir), ".moonraker_data")

@@ -13,23 +13,29 @@ import (
 
 // Manager handles local gcode file storage.
 type Manager struct {
-	gcodeDir string
+	gcodeDir  string
+	configDir string
 }
 
-// NewManager creates a file manager with the given gcode directory.
-func NewManager(gcodeDir string) (*Manager, error) {
+// NewManager creates a file manager with the given gcode and config directories.
+func NewManager(gcodeDir, configDir string) (*Manager, error) {
 	if err := os.MkdirAll(gcodeDir, 0755); err != nil {
 		return nil, fmt.Errorf("creating gcode dir %s: %w", gcodeDir, err)
 	}
-	return &Manager{gcodeDir: gcodeDir}, nil
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return nil, fmt.Errorf("creating config dir %s: %w", configDir, err)
+	}
+	return &Manager{gcodeDir: gcodeDir, configDir: configDir}, nil
 }
 
 // GetRootPath returns the absolute path for a file root.
 func (m *Manager) GetRootPath(root string) string {
-	if root == "gcodes" {
+	switch root {
+	case "config":
+		return m.configDir
+	default:
 		return m.gcodeDir
 	}
-	return m.gcodeDir
 }
 
 // ListFiles returns file metadata for all files in the given root.

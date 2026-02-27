@@ -1,0 +1,15 @@
+server:
+  host: "0.0.0.0"
+  port: 7125
+
+printer:
+  ip: ""          # Snapmaker J1S IP address (set after boot)
+  token: ""       # Authentication token (confirmed at printer HMI)
+  model: "Snapmaker J1S"
+  poll_interval: 5
+
+files:
+  gcode_dir: "/home/pi/printer_data/gcodes"
+
+spoolman:
+  server: ""  # Spoolman server URL (e.g. "http://berling:7912")

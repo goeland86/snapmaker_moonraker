@@ -41,8 +41,12 @@ func (s *Server) handleFileDirectory(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		path = "gcodes"
 	}
-	// If path starts with a known root, extract it
-	if strings.HasPrefix(path, "gcodes") {
+	// If path starts with a known root, extract it.
+	if strings.HasPrefix(path, "config") {
+		root = "config"
+		path = strings.TrimPrefix(path, "config")
+		path = strings.TrimPrefix(path, "/")
+	} else if strings.HasPrefix(path, "gcodes") {
 		root = "gcodes"
 		path = strings.TrimPrefix(path, "gcodes")
 		path = strings.TrimPrefix(path, "/")
@@ -359,6 +363,11 @@ func (s *Server) handleFileRoots(w http.ResponseWriter, r *http.Request) {
 			{
 				"name":        "gcodes",
 				"path":        s.fileManager.GetRootPath("gcodes"),
+				"permissions": "rw",
+			},
+			{
+				"name":        "config",
+				"path":        s.fileManager.GetRootPath("config"),
 				"permissions": "rw",
 			},
 		},

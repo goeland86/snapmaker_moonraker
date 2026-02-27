@@ -474,6 +474,21 @@ func (c *Client) Connected() bool {
 	return c.conn != nil
 }
 
+// SetTotalLines sets the total line count for progress calculation.
+// Used to restore progress tracking after a restart.
+func (c *Client) SetTotalLines(n uint32) {
+	c.subMu.Lock()
+	c.totalLines = n
+	c.subMu.Unlock()
+}
+
+// TotalLines returns the current total line count.
+func (c *Client) TotalLines() uint32 {
+	c.subMu.RLock()
+	defer c.subMu.RUnlock()
+	return c.totalLines
+}
+
 // IsUploading returns true if an upload is in progress.
 // Used by the state poller to avoid reconnection attempts during upload.
 func (c *Client) IsUploading() bool {
@@ -593,6 +608,15 @@ func (c *Client) Upload(filename string, data []byte) error {
 	}
 
 	data = gcode.Process(data, c.model)
+
+	// Count lines in the processed GCode so we can calculate progress.
+	// The screen MCU query (0xAC/0x1A) always times out on J1S, so we
+	// compute totalLines ourselves from the file we're about to upload.
+	lineCount := uint32(bytes.Count(data, []byte{'\n'}))
+	c.subMu.Lock()
+	c.totalLines = lineCount
+	c.subMu.Unlock()
+	log.Printf("Upload: %d lines in processed GCode", lineCount)
 
 	// Use only the base filename for SACP upload — the printer stores files flat,
 	// and paths with subdirectories confuse the HMI file index.

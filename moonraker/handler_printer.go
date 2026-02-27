@@ -185,7 +185,7 @@ func (s *Server) handlePrintStart(w http.ResponseWriter, r *http.Request) {
 				if err := s.printerClient.Upload(filename, data); err != nil {
 					log.Printf("Error uploading to printer: %v", err)
 				} else {
-					s.startSpoolmanTracking(filename)
+					s.StartSpoolmanTracking(filename)
 				}
 			}()
 		}
@@ -196,8 +196,8 @@ func (s *Server) handlePrintStart(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// startSpoolmanTracking initiates filament usage tracking if Spoolman is configured.
-func (s *Server) startSpoolmanTracking(filename string) {
+// StartSpoolmanTracking initiates filament usage tracking if Spoolman is configured.
+func (s *Server) StartSpoolmanTracking(filename string) {
 	if s.spoolman == nil || s.spoolman.GetSpoolID() == 0 {
 		return
 	}

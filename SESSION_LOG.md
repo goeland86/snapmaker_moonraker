@@ -1476,3 +1476,73 @@ Added Linux x86_64, Windows x86_64, and macOS ARM64 builds to the Jenkins pipeli
 | `Release_Notes.md` | New — consolidated release notes for all versions |
 | `Jenkinsfile` | Extract notes from Release_Notes.md; build Linux/Windows/Mac binaries |
 | `.gitignore` | Added cross-platform binary names |
+
+---
+
+## Session 18 — 2026-02-27: Print Progress Fix & Restart Recovery
+
+### Problem: Mainsail Shows 0% Progress
+
+Print progress in Mainsail was permanently stuck at 0%, even though the bridge had `currentLine` from SACP subscriptions (0xAC/0xA0) updated every poll cycle.
+
+### Root Cause
+
+Progress was calculated as `currentLine / totalLines * 100` in `client.GetStatus()`, but `totalLines` was only populated by the screen MCU query (0xAC/0x1A via `queryPrintingFileInfo()`). This query **always times out** on the J1S — confirmed by every log entry showing "Printing file info not available (screen query): timeout". With `totalLines == 0`, the division was skipped and progress stayed at 0%.
+
+### Fix 1: Compute totalLines During Upload
+
+After `gcode.Process()` in `Upload()`, the processed GCode is already in memory. Added `bytes.Count(data, []byte{'\n'})` to count lines and set `c.totalLines` directly — no dependency on the broken screen MCU query.
+
+### Fix 2: Print State File for Restart Recovery
+
+If the Pi restarts mid-print, `totalLines` is lost (it was only in memory). Added a simple JSON state file (`.moonraker_data/print_state.json`) containing `{"filename":"...","total_lines":N}`.
+
+**Write**: When the state poller first sees a print in progress with filename and totalLines known, it writes the state file.
+
+**Restore**: On restart, when the poller detects printing with `totalLines == 0`, it:
+1. Checks the state file — if filename matches, restores `totalLines` instantly
+2. Falls back to reading the file from disk and counting lines (works for touchscreen-started prints if the file exists locally)
+
+**Clear**: When a print finishes (transition away from printing), the state file is deleted.
+
+**Spoolman recovery**: If printing but Spoolman isn't tracking, the poller calls `StartSpoolmanTracking()` which re-parses the file for per-line filament data.
+
+Guards (`printStateRestored`) prevent repeated file reads every poll cycle.
+
+### Implementation
+
+**`printer/client.go`**:
+- `SetTotalLines(n uint32)` / `TotalLines() uint32` — accessor methods for external use
+- In `Upload()`: count lines with `bytes.Count(data, []byte{'\n'})` and set `totalLines`
+
+**`main.go`**:
+- `printState` struct + `writePrintState()` / `readPrintState()` / `clearPrintState()` — JSON file persistence
+- State poller callback: writes state file on print start, restores on restart, clears on print end
+- Spoolman tracking restored on restart via `server.StartSpoolmanTracking()`
+
+**`moonraker/handler_printer.go`**:
+- Exported `StartSpoolmanTracking()` (was `startSpoolmanTracking()`) for use from `main.go`
+
+**`moonraker/websocket.go`**:
+- Updated call to use exported `StartSpoolmanTracking()`
+
+### Testing
+
+Deployed during an active print (`Voron_Terminator_spring_4mm_0.2mm_6h16m_J1.gcode`, 1,520,320 lines). Pre-seeded the state file, restarted the service:
+
+```
+Machine status: IDLE -> PRINTING
+Print file: Voron_Terminator_spring_4mm_0.2mm_6h16m_J1.gcode
+Restored totalLines=1520320 for ... from print state file
+```
+
+Moonraker API confirmed: `virtual_sdcard.progress = 0.3247` (32.5%). Mainsail showed a live progress bar for the first time.
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `printer/client.go` | `SetTotalLines()`/`TotalLines()` accessors; count lines in `Upload()` before SACP transfer |
+| `main.go` | Print state file persistence; restore totalLines + Spoolman tracking on restart |
+| `moonraker/handler_printer.go` | Export `StartSpoolmanTracking()` |
+| `moonraker/websocket.go` | Updated call to exported `StartSpoolmanTracking()` |

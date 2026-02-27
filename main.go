@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -18,6 +20,43 @@ import (
 	"github.com/john/snapmaker_moonraker/printer"
 	"github.com/john/snapmaker_moonraker/spoolman"
 )
+
+// printState is persisted to disk so progress and Spoolman tracking
+// can be restored if the bridge restarts during a print.
+type printState struct {
+	Filename   string `json:"filename"`
+	TotalLines uint32 `json:"total_lines"`
+}
+
+func writePrintState(path string, ps printState) {
+	data, err := json.Marshal(ps)
+	if err != nil {
+		log.Printf("Failed to marshal print state: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		log.Printf("Failed to write print state: %v", err)
+	}
+}
+
+func readPrintState(path string) (printState, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return printState{}, false
+	}
+	var ps printState
+	if err := json.Unmarshal(data, &ps); err != nil {
+		return printState{}, false
+	}
+	if ps.Filename == "" {
+		return printState{}, false
+	}
+	return ps, true
+}
+
+func clearPrintState(path string) {
+	os.Remove(path)
+}
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to configuration file")
@@ -65,6 +104,9 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	log.Printf("Database directory: %s", filepath.Join(dataDir, "database"))
+
+	// Print state file for restart recovery.
+	printStatePath := filepath.Join(dataDir, "print_state.json")
 
 	// Initialize history manager (will be connected to server hub after server creation).
 	var historyMgr *history.Manager
@@ -140,6 +182,8 @@ func main() {
 
 	// Start state poller.
 	var prevPrinterState string
+	var printStateWritten bool  // track whether we've written the state file for this print
+	var printStateRestored bool // avoid retrying file reads every poll cycle
 	poller := printer.NewStatePoller(pc, state, cfg.Printer.PollInterval, func(s *printer.State) {
 		snap := s.Snapshot()
 		server.Hub().BroadcastStatusUpdate(s)
@@ -164,6 +208,47 @@ func main() {
 				server.Hub().BroadcastHistoryChanged("finished", job)
 				log.Printf("History: finished job %s (%s)", job.Filename, job.Status)
 			}
+			clearPrintState(printStatePath)
+			printStateWritten = false
+			printStateRestored = false
+		}
+
+		// Print state persistence: restore totalLines from state file after
+		// a restart, and write the state file when we have all the data.
+		if snap.PrinterState == "printing" && snap.PrintFileName != "" {
+			if pc.TotalLines() == 0 && !printStateRestored {
+				// totalLines unknown — try to restore from state file or compute from file on disk.
+				if ps, ok := readPrintState(printStatePath); ok && ps.Filename == snap.PrintFileName && ps.TotalLines > 0 {
+					pc.SetTotalLines(ps.TotalLines)
+					printStateRestored = true
+					log.Printf("Restored totalLines=%d for %s from print state file", ps.TotalLines, ps.Filename)
+				} else {
+					// No state file or filename mismatch — try to count lines from the file on disk.
+					gcodeDir := fm.GetRootPath("gcodes")
+					fullPath := filepath.Join(gcodeDir, filepath.FromSlash(snap.PrintFileName))
+					if data, err := os.ReadFile(fullPath); err == nil {
+						lineCount := uint32(bytes.Count(data, []byte{'\n'}))
+						if lineCount > 0 {
+							pc.SetTotalLines(lineCount)
+							writePrintState(printStatePath, printState{
+								Filename:   snap.PrintFileName,
+								TotalLines: lineCount,
+							})
+							printStateWritten = true
+							log.Printf("Computed totalLines=%d for %s from file on disk", lineCount, snap.PrintFileName)
+						}
+					}
+					printStateRestored = true // don't retry file reads every poll cycle
+				}
+			} else if !printStateWritten {
+				// totalLines is set (from Upload) but we haven't persisted it yet.
+				writePrintState(printStatePath, printState{
+					Filename:   snap.PrintFileName,
+					TotalLines: pc.TotalLines(),
+				})
+				printStateWritten = true
+				log.Printf("Saved print state: %s (%d lines)", snap.PrintFileName, pc.TotalLines())
+			}
 		}
 
 		// Spoolman filament usage tracking.
@@ -174,6 +259,10 @@ func main() {
 			// Detect transition away from printing to stop tracking.
 			if prevPrinterState == "printing" && snap.PrinterState != "printing" {
 				spoolmanMgr.StopTracking()
+			}
+			// Restore Spoolman tracking after restart if printing but not tracking.
+			if snap.PrinterState == "printing" && snap.PrintFileName != "" && !spoolmanMgr.IsTracking() {
+				server.StartSpoolmanTracking(snap.PrintFileName)
 			}
 		}
 

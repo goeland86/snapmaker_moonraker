@@ -471,7 +471,7 @@ func (h *WSHub) handlePrintStart(req *jsonRPCRequest) interface{} {
 		return map[string]interface{}{}
 	}
 
-	h.server.startSpoolmanTracking(filename)
+	h.server.StartSpoolmanTracking(filename)
 
 	return map[string]interface{}{}
 }

@@ -473,17 +473,17 @@ func (h *WSHub) handlePrintStart(req *jsonRPCRequest) interface{} {
 }
 
 func (h *WSHub) handlePrintControl(action string) interface{} {
-	var gcode string
+	var err error
 	switch action {
 	case "pause":
-		gcode = "M25"
+		err = h.server.printerClient.PausePrint()
 	case "resume":
-		gcode = "M24"
+		err = h.server.printerClient.ResumePrint()
 	case "cancel":
-		gcode = "M26"
+		err = h.server.printerClient.StopPrint()
 	}
 
-	if _, err := h.server.printerClient.ExecuteGCode(gcode); err != nil {
+	if err != nil {
 		log.Printf("Print %s error: %v", action, err)
 	}
 

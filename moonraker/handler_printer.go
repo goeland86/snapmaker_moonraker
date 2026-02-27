@@ -217,7 +217,7 @@ func (s *Server) startSpoolmanTracking(filename string) {
 }
 
 func (s *Server) handlePrintPause(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.printerClient.ExecuteGCode("M25"); err != nil {
+	if err := s.printerClient.PausePrint(); err != nil {
 		log.Printf("Pause error: %v", err)
 	}
 	writeJSON(w, map[string]interface{}{
@@ -226,7 +226,7 @@ func (s *Server) handlePrintPause(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePrintResume(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.printerClient.ExecuteGCode("M24"); err != nil {
+	if err := s.printerClient.ResumePrint(); err != nil {
 		log.Printf("Resume error: %v", err)
 	}
 	writeJSON(w, map[string]interface{}{
@@ -235,7 +235,7 @@ func (s *Server) handlePrintResume(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePrintCancel(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.printerClient.ExecuteGCode("M26"); err != nil {
+	if err := s.printerClient.StopPrint(); err != nil {
 		log.Printf("Cancel error: %v", err)
 	}
 	writeJSON(w, map[string]interface{}{

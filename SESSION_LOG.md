@@ -1241,3 +1241,56 @@ The service binary path is `/opt/snapmaker-moonraker/snapmaker_moonraker` (per s
 | `printer/client.go` | `startPrint()` method, Upload() sends StartScreenPrint on fresh connection after reconnect |
 | `sacp/sacp.go` | Updated comment on first disconnect in StartUpload |
 | `moonraker/handler_printer.go` | `handlePrintStart` runs upload in background goroutine |
+
+---
+
+# Session 14 — 2026-02-27
+
+## Fix Print Cancel/Pause/Resume from Mainsail
+
+### Problem
+
+Clicking "Cancel", "Pause", or "Resume" in Mainsail had no effect on the printer. The buttons appeared to succeed (no error in the UI) but the printer continued printing.
+
+### Root Cause: Wrong Commands for SACP-Managed Prints
+
+The print control handlers were sending **GCode commands** via SACP's ExecuteGCode mechanism (CommandSet 0x01, CommandID 0x02):
+- Cancel: `M26` — In standard Marlin, this is "Set SD Position", NOT "Cancel Print"
+- Pause: `M25` — Marlin "Pause SD Print", unreliable through SACP
+- Resume: `M24` — Marlin "Resume SD Print", unreliable through SACP
+
+These GCode commands are for Marlin's SD card print system. On the Snapmaker J1S, prints started via SACP (through the screen MCU with 0xB0/0x08) are managed by the firmware's own state machine, not Marlin's SD subsystem. The GCode commands were either ignored or returned error codes that were silently logged.
+
+### Fix: Use Native SACP Print Control Commands
+
+Research into the [SnapmakerController-IDEX firmware](https://github.com/Snapmaker/SnapmakerController-IDEX/blob/main/snapmaker/event/event_printer.h) and [Luban's SacpClient.ts](https://github.com/Snapmaker/Luban/blob/main/src/server/services/machine/sacp/SacpClient.ts) revealed dedicated SACP commands for print control under CommandSet `0xAC` (COMMAND_SET_PRINTER):
+
+| Action | CommandSet | CommandID | ReceiverID | Firmware Constant |
+|--------|-----------|-----------|------------|-------------------|
+| Stop/Cancel | `0xAC` | `0x06` | 1 (Controller) | `PRINTER_ID_STOP_WORK` |
+| Pause | `0xAC` | `0x04` | 1 (Controller) | `PRINTER_ID_PAUSE_WORK` |
+| Resume | `0xAC` | `0x05` | 1 (Controller) | `PRINTER_ID_RESUME_WORK` |
+
+All three commands take an empty payload and directly transition the firmware state machine (e.g., PRINTING → STOPPING → STOPPED for cancel). The heartbeat subscription (0x01/0xA0) picks up the state change and broadcasts it to Mainsail via WebSocket.
+
+### Implementation
+
+Added three new methods to `printer/Client`:
+- `StopPrint()` — sends `sendCommand(0xAC, 0x06, nil)`
+- `PausePrint()` — sends `sendCommand(0xAC, 0x04, nil)`
+- `ResumePrint()` — sends `sendCommand(0xAC, 0x05, nil)`
+
+Updated both HTTP handlers (`handler_printer.go`) and WebSocket RPC handlers (`websocket.go`) to call these methods instead of `ExecuteGCode()`.
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| `printer/client.go` | Added `StopPrint()`, `PausePrint()`, `ResumePrint()` methods using native SACP commands |
+| `moonraker/handler_printer.go` | `handlePrintCancel/Pause/Resume` call new SACP methods instead of `ExecuteGCode("M26"/"M25"/"M24")` |
+| `moonraker/websocket.go` | `handlePrintControl()` calls new SACP methods instead of `ExecuteGCode` |
+
+## Testing Results
+
+- **Cancel**: Confirmed working — clicked Cancel in Mainsail, printer immediately transitioned PRINTING → STOPPING. The SACP command ACK times out (response consumed by subscription handler) but the command itself succeeds; heartbeat confirms the state change.
+- **Pause/Resume**: Uses same `sendCommand` pattern (0xAC/0x04 and 0xAC/0x05), expected to work identically. Not yet tested live.

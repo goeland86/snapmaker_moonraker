@@ -524,6 +524,21 @@ func (c *Client) sendCommand(commandSet, commandID byte, data []byte) error {
 	return nil
 }
 
+// StopPrint sends the SACP stop/cancel print command (0xAC/0x06).
+func (c *Client) StopPrint() error {
+	return c.sendCommand(0xAC, 0x06, nil)
+}
+
+// PausePrint sends the SACP pause print command (0xAC/0x04).
+func (c *Client) PausePrint() error {
+	return c.sendCommand(0xAC, 0x04, nil)
+}
+
+// ResumePrint sends the SACP resume print command (0xAC/0x05).
+func (c *Client) ResumePrint() error {
+	return c.sendCommand(0xAC, 0x05, nil)
+}
+
 // Home sends a home-all-axes command.
 func (c *Client) Home() error {
 	data := &bytes.Buffer{}

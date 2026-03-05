@@ -180,15 +180,29 @@ func (s *Server) machineSystemInfo() map[string]interface{} {
 				"version": []int{0, 0, 0},
 			},
 			"available_services": allowedServices,
-			"service_state":      getServiceStates(),
+			"service_state":      s.getServiceStates(),
 		},
 	}
 }
 
 // getServiceStates queries systemd for the active/sub state of each allowed service.
-func getServiceStates() map[string]interface{} {
+// The virtual "printer" service reports state based on the SACP connection.
+func (s *Server) getServiceStates() map[string]interface{} {
 	states := make(map[string]interface{})
 	for _, svc := range allowedServices {
+		if svc == "printer" {
+			active := "active"
+			sub := "running"
+			if !s.printerClient.Connected() || s.printerClient.IsManualDisconnect() {
+				active = "inactive"
+				sub = "dead"
+			}
+			states[svc] = map[string]interface{}{
+				"active_state": active,
+				"sub_state":    sub,
+			}
+			continue
+		}
 		active := "inactive"
 		sub := "dead"
 		if out, err := exec.Command("systemctl", "show", "-p", "ActiveState,SubState", "--value", svc).Output(); err == nil {
@@ -278,6 +292,7 @@ func (s *Server) getWebcamsList() map[string]interface{} {
 var allowedServices = []string{
 	"crowsnest",
 	"moonraker-obico",
+	"printer",
 }
 
 func (s *Server) handleMachineServicesList(w http.ResponseWriter, r *http.Request) {
@@ -294,7 +309,7 @@ func (s *Server) machineServicesList() map[string]interface{} {
 
 func (s *Server) handleMachineServiceRestart(w http.ResponseWriter, r *http.Request) {
 	service := r.URL.Query().Get("service")
-	if err := machineServiceAction("restart", service); err != nil {
+	if err := s.serviceAction("restart", service); err != nil {
 		writeJSON(w, map[string]interface{}{
 			"error": map[string]interface{}{
 				"code":    400,
@@ -308,7 +323,7 @@ func (s *Server) handleMachineServiceRestart(w http.ResponseWriter, r *http.Requ
 
 func (s *Server) handleMachineServiceStop(w http.ResponseWriter, r *http.Request) {
 	service := r.URL.Query().Get("service")
-	if err := machineServiceAction("stop", service); err != nil {
+	if err := s.serviceAction("stop", service); err != nil {
 		writeJSON(w, map[string]interface{}{
 			"error": map[string]interface{}{
 				"code":    400,
@@ -322,7 +337,7 @@ func (s *Server) handleMachineServiceStop(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleMachineServiceStart(w http.ResponseWriter, r *http.Request) {
 	service := r.URL.Query().Get("service")
-	if err := machineServiceAction("start", service); err != nil {
+	if err := s.serviceAction("start", service); err != nil {
 		writeJSON(w, map[string]interface{}{
 			"error": map[string]interface{}{
 				"code":    400,
@@ -332,6 +347,35 @@ func (s *Server) handleMachineServiceStart(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, map[string]interface{}{"result": "ok"})
+}
+
+// serviceAction routes service control actions. The virtual "printer" service
+// controls the SACP connection; all other services go through systemctl.
+func (s *Server) serviceAction(action, service string) error {
+	if service == "printer" {
+		return s.printerServiceAction(action)
+	}
+	return machineServiceAction(action, service)
+}
+
+// printerServiceAction disconnects/connects the SACP printer connection.
+func (s *Server) printerServiceAction(action string) error {
+	switch action {
+	case "stop":
+		log.Printf("Manual printer disconnect requested")
+		return s.printerClient.ManualDisconnect()
+	case "start":
+		log.Printf("Manual printer connect requested")
+		return s.printerClient.ManualConnect()
+	case "restart":
+		log.Printf("Manual printer reconnect requested")
+		if err := s.printerClient.ManualDisconnect(); err != nil {
+			return err
+		}
+		return s.printerClient.ManualConnect()
+	default:
+		return fmt.Errorf("unsupported action %q for printer service", action)
+	}
 }
 
 // machineServiceAction executes a systemctl action on an allowed service.

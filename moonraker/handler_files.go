@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // registerFileHandlers sets up /server/files/* routes.
@@ -84,6 +85,8 @@ func (s *Server) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.enrichMetadataFromHistory(filename, meta)
+
 	writeJSON(w, map[string]interface{}{
 		"result": meta,
 	})
@@ -127,6 +130,12 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("File uploaded: %s/%s (%d bytes)", root, filename, len(data))
 
+	// Get the real modification time from the saved file.
+	modTime := float64(time.Now().UnixNano()) / 1e9
+	if info, err := s.fileManager.StatFile(root, filename); err == nil {
+		modTime = float64(info.ModTime().UnixNano()) / 1e9
+	}
+
 	// PrusaSlicer/OrcaSlicer send print=true for "Upload and Print".
 	startPrint := r.FormValue("print") == "true"
 	if startPrint && root == "gcodes" {
@@ -152,7 +161,7 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 			"item": map[string]interface{}{
 				"root":     root,
 				"path":     filename,
-				"modified": 0,
+				"modified": modTime,
 				"size":     len(data),
 			},
 		},
@@ -163,7 +172,7 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 			"item": map[string]interface{}{
 				"path":     filename,
 				"root":     root,
-				"modified": 0,
+				"modified": modTime,
 				"size":     len(data),
 			},
 			"action": "create_file",
@@ -390,6 +399,24 @@ func (s *Server) handleFileRoots(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 	})
+}
+
+// enrichMetadataFromHistory populates print_start_time and job_id from the
+// most recent history job matching the filename.
+func (s *Server) enrichMetadataFromHistory(filename string, meta map[string]interface{}) {
+	if s.history == nil {
+		return
+	}
+
+	// Search history for the most recent job matching this filename.
+	jobs, _ := s.history.ListJobs(0, 0, 0, 0, "desc")
+	for _, job := range jobs {
+		if job.Filename == filename {
+			meta["print_start_time"] = job.StartTime
+			meta["job_id"] = job.JobID
+			return
+		}
+	}
 }
 
 // Ensure json import is used (needed for handleFileUpload body parsing if extended).

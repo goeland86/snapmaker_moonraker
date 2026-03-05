@@ -26,8 +26,9 @@ type Client struct {
 	mu        sync.Mutex
 	conn      net.Conn
 	router    *PacketRouter
-	writeMu   sync.Mutex // serializes writes to conn
-	uploading bool       // true during Upload() to prevent poller reconnection
+	writeMu            sync.Mutex // serializes writes to conn
+	uploading          bool       // true during Upload() to prevent poller reconnection
+	manualDisconnect   bool       // true when user explicitly disconnected via service panel
 
 	// Subscription data (updated asynchronously by the packet router).
 	subMu         sync.RWMutex
@@ -495,6 +496,29 @@ func (c *Client) IsUploading() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.uploading
+}
+
+// IsManualDisconnect returns true if the user explicitly disconnected.
+func (c *Client) IsManualDisconnect() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.manualDisconnect
+}
+
+// ManualDisconnect disconnects from the printer and suppresses auto-reconnect.
+func (c *Client) ManualDisconnect() error {
+	c.mu.Lock()
+	c.manualDisconnect = true
+	c.mu.Unlock()
+	return c.Disconnect()
+}
+
+// ManualConnect clears the manual disconnect flag and reconnects.
+func (c *Client) ManualConnect() error {
+	c.mu.Lock()
+	c.manualDisconnect = false
+	c.mu.Unlock()
+	return c.Connect()
 }
 
 // IP returns the printer's IP address.

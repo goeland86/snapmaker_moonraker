@@ -1640,3 +1640,57 @@ PrusaSlicer's "Upload and Print" button sends `POST /server/files/upload` with a
 | File | Change |
 |------|--------|
 | `moonraker/handler_files.go` | Check `print=true` form field after upload; trigger SACP upload + print start in background |
+
+---
+
+## Session 20 — 2026-03-05 (continued)
+
+### Problem 7: No Way to Release SACP Connection for Touchscreen Access
+
+The bridge's state poller auto-reconnects the SACP connection every few seconds. When the user needs to adjust Z offset via the J1S touchscreen (since M290 baby-stepping is non-functional), the auto-reconnect locks them out almost immediately. The user requested a way to manually disconnect and reconnect from Mainsail's UI.
+
+### Solution: Virtual "printer" Service in Mainsail's Service Panel
+
+Added a virtual "printer" service to the Moonraker service management mechanism. Mainsail shows stop/start/restart buttons for it alongside crowsnest and moonraker-obico.
+
+**Implementation:**
+- Added `manualDisconnect` flag to `printer.Client` — suppresses state poller auto-reconnect when set
+- `ManualDisconnect()` sets the flag and disconnects; `ManualConnect()` clears it and reconnects
+- State poller checks `IsManualDisconnect()` before attempting auto-reconnect
+- Added "printer" to `allowedServices` list
+- `serviceAction()` routes "printer" to `printerServiceAction()` (disconnect/connect); other services go through systemctl as before
+- Both HTTP and WebSocket service handlers route through `serviceAction()`
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `printer/client.go` | Add `manualDisconnect` flag, `ManualDisconnect()`, `ManualConnect()`, `IsManualDisconnect()` |
+| `printer/state.go` | State poller skips auto-reconnect when `manualDisconnect` is set |
+| `moonraker/handler_server.go` | Add "printer" to `allowedServices`; add `serviceAction()` and `printerServiceAction()` routing; HTTP handlers use `serviceAction()` |
+| `moonraker/websocket.go` | WebSocket service handler uses `serviceAction()` instead of `machineServiceAction()` directly |
+
+### Bug Fix: Printer Service Buttons Disabled in Mainsail
+
+The stop/start buttons for the virtual "printer" service were disabled in Mainsail. Root cause: `getServiceStates()` queried systemd for every service in `allowedServices`, but "printer" isn't a real systemd service — so it returned `inactive/dead`, and Mainsail disabled the stop button.
+
+**Fix:** Converted `getServiceStates()` to a method on `Server`. For the "printer" service, it now reports `active/running` when connected and `inactive/dead` when manually disconnected, based on the actual SACP connection state. Other services still query systemd.
+
+### Bug Fix: File Modified Timestamps and Print History in Mainsail
+
+Two issues with Mainsail's file manager:
+1. **Modified dates always zero** — The upload response and WebSocket notification hardcoded `"modified": 0`. Now uses the real file modification time from `os.Stat()` after saving.
+2. **No print history per file** — File metadata always returned `print_start_time: nil` and `job_id: nil`. Mainsail uses these to show which files have been printed/cancelled/errored. Now `enrichMetadataFromHistory()` looks up the most recent history job matching the filename and populates these fields.
+
+### Investigation: X Over-Travel After Priming
+
+User reported the left extruder (T0) traveling too far right after priming. Ran the pre-processor on the actual file and diffed input vs output. The pre-processor made exactly **zero changes** to the priming/startup sequence — only a comment header prepended and one `M104 S0 T1` nozzle shutoff inserted at line 30296 (last tool change). The slicer bed was configured as 324x200mm (`bed_shape = 0x0,324x0,324x200,0x200`). Actual print X range was 79.7–244.3mm, centered at X=162mm (correct for a 324mm bed). Issue traced to the PrusaSlicer profile configuration, not the bridge.
+
+### Files Changed (addendum)
+
+| File | Change |
+|------|--------|
+| `moonraker/handler_server.go` | `getServiceStates()` reports virtual "printer" service state from SACP connection |
+| `moonraker/handler_files.go` | Real `modified` timestamps in upload responses; `enrichMetadataFromHistory()` populates `print_start_time`/`job_id` |
+| `moonraker/websocket.go` | WebSocket metadata handler calls `enrichMetadataFromHistory()` |
+| `files/manager.go` | Add `StatFile()` method |

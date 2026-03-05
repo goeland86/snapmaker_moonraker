@@ -166,6 +166,17 @@ func (sp *StatePoller) poll() {
 			return
 		}
 
+		// User explicitly disconnected via the service panel — don't auto-reconnect.
+		if sp.client.IsManualDisconnect() {
+			sp.state.mu.Lock()
+			sp.state.data.Connected = false
+			sp.state.mu.Unlock()
+			if sp.callback != nil {
+				sp.callback(sp.state)
+			}
+			return
+		}
+
 		// Try to reconnect automatically.
 		if sp.client.IP() != "" {
 			if sp.client.Ping() {

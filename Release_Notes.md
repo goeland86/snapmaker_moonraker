@@ -19,10 +19,12 @@
 ### New Features (continued)
 
 - **PrusaSlicer "Upload and Print"** — The `print=true` form field on file uploads is now honored. PrusaSlicer and OrcaSlicer's "Upload and Print" button now uploads the file to the bridge, sends it to the printer via SACP, and starts printing automatically.
+- **Printer disconnect/connect from Mainsail** — A virtual "printer" service appears in Mainsail's service panel alongside crowsnest and moonraker-obico. Stopping the service releases the SACP connection and suppresses auto-reconnect, giving full touchscreen access for Z offset adjustments. Starting the service reconnects.
+- **File metadata and history** — Mainsail's file manager now shows real modification dates and print history status (printed/cancelled/errored) per file, matching standard Moonraker behavior.
 
 ### Known Limitations
 
-- **Z baby-stepping not supported** — The J1S firmware accepts `M290` (result code 0) but does not implement it. `SET_GCODE_OFFSET` is silently accepted to prevent Mainsail errors. Z offset must be adjusted in the slicer or on the touchscreen.
+- **Z baby-stepping not supported** — The J1S firmware accepts `M290` (result code 0) but does not implement it. `SET_GCODE_OFFSET` is silently accepted to prevent Mainsail errors. Z offset can be adjusted on the touchscreen after stopping the "printer" service from Mainsail's service panel.
 
 ---
 

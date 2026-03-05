@@ -537,6 +537,7 @@ func (h *WSHub) handleFileMetadata(req *jsonRPCRequest) interface{} {
 			"modified": float64(0),
 		}
 	}
+	h.server.enrichMetadataFromHistory(filename, meta)
 	return meta
 }
 
@@ -727,7 +728,7 @@ func (h *WSHub) handleAnnouncementsList() interface{} {
 
 func (h *WSHub) handleMachineServiceAction(action string, params interface{}) interface{} {
 	service := extractStringParam(params, "service")
-	if err := machineServiceAction(action, service); err != nil {
+	if err := h.server.serviceAction(action, service); err != nil {
 		log.Printf("Service %s error: %v", action, err)
 		return map[string]interface{}{"error": err.Error()}
 	}

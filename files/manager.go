@@ -194,6 +194,12 @@ func (m *Manager) ReadFile(root, filename string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// StatFile returns os.FileInfo for a file in storage.
+func (m *Manager) StatFile(root, filename string) (os.FileInfo, error) {
+	path := filepath.Join(m.GetRootPath(root), filepath.FromSlash(filename))
+	return os.Stat(path)
+}
+
 // CreateDirectory creates a directory within a root.
 func (m *Manager) CreateDirectory(root, dirPath string) error {
 	path := filepath.Join(m.GetRootPath(root), filepath.FromSlash(dirPath))

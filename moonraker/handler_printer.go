@@ -2,9 +2,11 @@ package moonraker
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/john/snapmaker_moonraker/files"
@@ -145,6 +147,21 @@ func (s *Server) handleGCodeScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Intercept Klipper-specific commands (ACTIVATE_EXTRUDER, SET_HEATER_TEMPERATURE, etc.)
+	// and temperature GCodes (M104/M109/M140/M190) to route through SACP directly.
+	if handled, err := s.interceptGCode(body.Script); handled {
+		if err != nil {
+			log.Printf("GCode intercept error: %v", err)
+			s.wsHub.BroadcastNotification("notify_gcode_response", []interface{}{
+				"Error: " + err.Error(),
+			})
+		}
+		writeJSON(w, map[string]interface{}{
+			"result": map[string]interface{}{},
+		})
+		return
+	}
+
 	result, err := s.printerClient.ExecuteGCode(body.Script)
 	if err != nil {
 		log.Printf("GCode error: %v", err)
@@ -161,6 +178,215 @@ func (s *Server) handleGCodeScript(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{
 		"result": map[string]interface{}{},
 	})
+}
+
+// interceptGCode handles Klipper-specific commands that the Snapmaker doesn't
+// understand natively. Returns (handled, error). If handled is true, the caller
+// should not forward the command to ExecuteGCode.
+func (s *Server) interceptGCode(script string) (bool, error) {
+	upperScript := strings.ToUpper(strings.TrimSpace(script))
+	fields := strings.Fields(upperScript)
+	if len(fields) == 0 {
+		return false, nil
+	}
+	cmd := fields[0]
+
+	switch cmd {
+	case "ACTIVATE_EXTRUDER":
+		return s.handleActivateExtruder(script)
+	case "SET_HEATER_TEMPERATURE":
+		return s.handleSetHeaterTemperature(script)
+	case "SET_GCODE_OFFSET":
+		// M290 baby-stepping is accepted by the J1S firmware (result code 0)
+		// but has no effect — BABYSTEPPING is likely disabled in Snapmaker's
+		// Marlin configuration. Ignore silently so Mainsail doesn't error.
+		return true, nil
+	case "TURN_OFF_HEATERS":
+		return s.handleTurnOffHeaters()
+	case "M104", "M109":
+		return s.handleMSetExtruderTemp(script, cmd)
+	case "M140", "M190":
+		return s.handleMSetBedTemp(script)
+	}
+
+	return false, nil
+}
+
+// handleActivateExtruder handles ACTIVATE_EXTRUDER EXTRUDER=extruder1.
+// Sends a T0/T1 GCode command and updates the active extruder state.
+func (s *Server) handleActivateExtruder(script string) (bool, error) {
+	name := extractKlipperParam(script, "EXTRUDER")
+	if name == "" {
+		return true, fmt.Errorf("ACTIVATE_EXTRUDER: missing EXTRUDER parameter")
+	}
+
+	var toolID int
+	switch name {
+	case "extruder":
+		toolID = 0
+	case "extruder1":
+		toolID = 1
+	default:
+		return true, fmt.Errorf("ACTIVATE_EXTRUDER: unknown extruder %q", name)
+	}
+
+	gcmd := fmt.Sprintf("T%d", toolID)
+	if _, err := s.printerClient.ExecuteGCode(gcmd); err != nil {
+		return true, fmt.Errorf("ACTIVATE_EXTRUDER: %w", err)
+	}
+
+	s.state.SetActiveExtruder(name)
+	log.Printf("Active extruder changed to %s (T%d)", name, toolID)
+	return true, nil
+}
+
+// handleSetGCodeOffset handles SET_GCODE_OFFSET Z=x Z_ADJUST=x MOVE=1.
+// Translates to M290 baby-stepping commands on the Snapmaker.
+func (s *Server) handleSetGCodeOffset(script string) (bool, error) {
+	zStr := extractKlipperParam(script, "Z_ADJUST")
+	if zStr != "" {
+		// Relative adjustment: SET_GCODE_OFFSET Z_ADJUST=0.05 MOVE=1
+		delta, err := strconv.ParseFloat(zStr, 64)
+		if err != nil {
+			return true, fmt.Errorf("SET_GCODE_OFFSET: invalid Z_ADJUST value %q", zStr)
+		}
+		gcmd := fmt.Sprintf("M290 Z%.3f", delta)
+		if _, err := s.printerClient.ExecuteGCode(gcmd); err != nil {
+			return true, fmt.Errorf("SET_GCODE_OFFSET: %w", err)
+		}
+		newOffset := s.state.AdjustZOffset(delta)
+		log.Printf("Z offset adjusted by %.3f to %.3f", delta, newOffset)
+		return true, nil
+	}
+
+	zStr = extractKlipperParam(script, "Z")
+	if zStr != "" {
+		// Absolute offset: SET_GCODE_OFFSET Z=0.1 MOVE=1
+		offset, err := strconv.ParseFloat(zStr, 64)
+		if err != nil {
+			return true, fmt.Errorf("SET_GCODE_OFFSET: invalid Z value %q", zStr)
+		}
+		snap := s.state.Snapshot()
+		delta := offset - snap.ZOffset
+		if delta != 0 {
+			gcmd := fmt.Sprintf("M290 Z%.3f", delta)
+			if _, err := s.printerClient.ExecuteGCode(gcmd); err != nil {
+				return true, fmt.Errorf("SET_GCODE_OFFSET: %w", err)
+			}
+		}
+		s.state.SetZOffset(offset)
+		log.Printf("Z offset set to %.3f", offset)
+		return true, nil
+	}
+
+	// No Z parameter — ignore (could be X/Y offset, not relevant).
+	return false, nil
+}
+
+// handleSetHeaterTemperature handles SET_HEATER_TEMPERATURE HEATER=extruder1 TARGET=200.
+func (s *Server) handleSetHeaterTemperature(script string) (bool, error) {
+	heater := extractKlipperParam(script, "HEATER")
+	targetStr := extractKlipperParam(script, "TARGET")
+	if heater == "" {
+		return true, fmt.Errorf("SET_HEATER_TEMPERATURE: missing HEATER parameter")
+	}
+
+	target := 0
+	if targetStr != "" {
+		if v, err := strconv.ParseFloat(targetStr, 64); err == nil {
+			target = int(v)
+		}
+	}
+
+	switch heater {
+	case "extruder":
+		return true, s.printerClient.SetToolTemperature(0, target)
+	case "extruder1":
+		return true, s.printerClient.SetToolTemperature(1, target)
+	case "heater_bed":
+		return true, s.printerClient.SetBedTemperature(0, target)
+	default:
+		return true, fmt.Errorf("SET_HEATER_TEMPERATURE: unknown heater %q", heater)
+	}
+}
+
+// handleTurnOffHeaters turns off all heaters via SACP.
+func (s *Server) handleTurnOffHeaters() (bool, error) {
+	var errs []string
+	if err := s.printerClient.SetToolTemperature(0, 0); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if err := s.printerClient.SetToolTemperature(1, 0); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if err := s.printerClient.SetBedTemperature(0, 0); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return true, fmt.Errorf("TURN_OFF_HEATERS: %s", strings.Join(errs, "; "))
+	}
+	return true, nil
+}
+
+// handleMSetExtruderTemp handles M104/M109 with optional T parameter.
+// M104 S200 T1 → SetToolTemperature(1, 200)
+func (s *Server) handleMSetExtruderTemp(script string, cmd string) (bool, error) {
+	temp := parseGCodeIntParam(script, 'S')
+	toolID := parseGCodeIntParam(script, 'T')
+
+	// If no T parameter, use the active extruder.
+	if toolID < 0 {
+		snap := s.state.Snapshot()
+		if snap.ActiveExtruder == "extruder1" {
+			toolID = 1
+		} else {
+			toolID = 0
+		}
+	}
+
+	return true, s.printerClient.SetToolTemperature(toolID, temp)
+}
+
+// handleMSetBedTemp handles M140/M190 — always routes through SACP.
+func (s *Server) handleMSetBedTemp(script string) (bool, error) {
+	temp := parseGCodeIntParam(script, 'S')
+	if temp < 0 {
+		temp = 0
+	}
+	return true, s.printerClient.SetBedTemperature(0, temp)
+}
+
+// extractKlipperParam extracts a named parameter from a Klipper-style command.
+// e.g., extractKlipperParam("SET_HEATER_TEMPERATURE HEATER=extruder1 TARGET=200", "HEATER") = "extruder1"
+func extractKlipperParam(script string, param string) string {
+	prefix := strings.ToUpper(param) + "="
+	for _, field := range strings.Fields(script) {
+		upper := strings.ToUpper(field)
+		if strings.HasPrefix(upper, prefix) {
+			// Return the original-case value after the '='.
+			idx := strings.IndexByte(field, '=')
+			if idx >= 0 {
+				return field[idx+1:]
+			}
+		}
+	}
+	return ""
+}
+
+// parseGCodeIntParam extracts a single-letter GCode parameter value.
+// e.g., parseGCodeIntParam("M104 S200 T1", 'S') = 200
+// Returns -1 if not found.
+func parseGCodeIntParam(script string, param byte) int {
+	upper := strings.ToUpper(script)
+	p := string(param)
+	for _, field := range strings.Fields(upper) {
+		if strings.HasPrefix(field, p) && len(field) > 1 {
+			if v, err := strconv.ParseFloat(field[1:], 64); err == nil {
+				return int(v)
+			}
+		}
+	}
+	return -1
 }
 
 func (s *Server) handlePrintStart(w http.ResponseWriter, r *http.Request) {

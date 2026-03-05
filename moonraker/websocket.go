@@ -89,6 +89,12 @@ func (h *WSHub) BroadcastStatusUpdate(state *printer.State) {
 	defer h.mu.RUnlock()
 
 	snap := state.Snapshot()
+
+	// Record temperature data for the temperature_store API.
+	if h.server.tempStore != nil {
+		h.server.tempStore.Record(snap)
+	}
+
 	objects := &PrinterObjects{}
 
 	for client := range h.clients {
@@ -434,6 +440,18 @@ func (h *WSHub) handleGCodeScript(req *jsonRPCRequest) interface{} {
 	// Intercept ? and HELP — these are Klipper console commands, not real GCode.
 	if upperScript == "?" || upperScript == "HELP" {
 		h.BroadcastNotification("notify_gcode_response", []interface{}{gcodeHelpText()})
+		return map[string]interface{}{}
+	}
+
+	// Intercept Klipper-specific commands (ACTIVATE_EXTRUDER, SET_HEATER_TEMPERATURE, etc.)
+	// and temperature GCodes (M104/M109/M140/M190) to route through SACP directly.
+	if handled, err := h.server.interceptGCode(script); handled {
+		if err != nil {
+			log.Printf("GCode intercept error: %v", err)
+			h.BroadcastNotification("notify_gcode_response", []interface{}{
+				"Error: " + err.Error(),
+			})
+		}
 		return map[string]interface{}{}
 	}
 

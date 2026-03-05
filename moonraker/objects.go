@@ -100,7 +100,7 @@ func (po *PrinterObjects) Toolhead(state printer.StateData) map[string]interface
 		"axis_minimum":         []float64{0, 0, 0, 0},
 		"axis_maximum":         []float64{325, 325, 340, 0},
 		"stalls":               0,
-		"extruder":             "extruder",
+		"extruder":             state.ActiveExtruder,
 	}
 }
 
@@ -250,6 +250,7 @@ func (po *PrinterObjects) GCode(state printer.StateData) map[string]interface{} 
 		"SET_HEATER_TEMPERATURE": map[string]interface{}{"help": "Set heater temperature"},
 		"TURN_OFF_HEATERS":       map[string]interface{}{"help": "Turn off all heaters"},
 		"SET_FAN_SPEED":          map[string]interface{}{"help": "Set fan speed"},
+		"ACTIVATE_EXTRUDER":      map[string]interface{}{"help": "Set active extruder"},
 		"CANCEL_PRINT":           map[string]interface{}{"help": "Cancel current print"},
 		"PAUSE":                  map[string]interface{}{"help": "Pause current print"},
 		"RESUME":                 map[string]interface{}{"help": "Resume current print"},

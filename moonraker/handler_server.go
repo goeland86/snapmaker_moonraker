@@ -110,20 +110,7 @@ func (s *Server) handleTemperatureStore(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) temperatureStore() map[string]interface{} {
-	// Return empty temperature history for each sensor.
-	// Mainsail expects arrays of temperature readings keyed by sensor name.
-	emptyStore := func() map[string]interface{} {
-		return map[string]interface{}{
-			"temperatures": []float64{},
-			"targets":      []float64{},
-			"powers":       []float64{},
-		}
-	}
-	return map[string]interface{}{
-		"extruder":   emptyStore(),
-		"extruder1":  emptyStore(),
-		"heater_bed": emptyStore(),
-	}
+	return s.tempStore.Snapshot()
 }
 
 func (s *Server) handleGCodeStore(w http.ResponseWriter, r *http.Request) {

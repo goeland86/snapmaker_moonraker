@@ -47,6 +47,7 @@ type Server struct {
 	history       *history.Manager
 	spoolman      *spoolman.Manager
 	wsHub         *WSHub
+	tempStore     *TempStore
 }
 
 // NewServer creates a new Moonraker server.
@@ -60,6 +61,7 @@ func NewServer(cfg Config, pc *printer.Client, st *printer.State, fm *files.Mana
 		database:      db,
 		history:       hist,
 		spoolman:      sm,
+		tempStore:     NewTempStore(1200),
 	}
 
 	s.wsHub = NewWSHub(s)

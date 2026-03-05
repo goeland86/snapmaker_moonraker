@@ -1552,3 +1552,79 @@ Moonraker API confirmed: `virtual_sdcard.progress = 0.3247` (32.5%). Mainsail sh
 - `144511c` "Fix print progress and add restart recovery for active prints"
 - `8c1eddf` "Update Claude Code local settings with accumulated permissions"
 - Both pushed to `origin/main`
+
+---
+
+## Session 19 — 2026-03-05: Dual Extruder Support, Temperature Store, Z Baby-stepping
+
+### Objective
+Fix dual-extruder control from Mainsail (tool selection and temperature setting), fix temperature graph blanking, and add Z offset baby-stepping support.
+
+### Problem 1: Can't Select Active Tool from Mainsail
+
+Clicking on extruder1 in the Mainsail dashboard had no effect. Mainsail sends `ACTIVATE_EXTRUDER EXTRUDER=extruder1` via `printer.gcode.script`, but this Klipper-specific command was forwarded as raw GCode to the Snapmaker which doesn't understand it.
+
+Additionally, `toolhead.extruder` was hardcoded to `"extruder"` in objects.go, so Mainsail never reflected which tool was active.
+
+**Fix:**
+- Added `ActiveExtruder` field to `StateData` (defaults to `"extruder"`)
+- `toolhead.extruder` now reads `state.ActiveExtruder` dynamically
+- `ACTIVATE_EXTRUDER EXTRUDER=extruder1` is intercepted, sends `T1` via SACP, and updates state
+- Added `State.SetActiveExtruder()` method for thread-safe updates
+
+### Problem 2: Can't Set Extruder1 Temperature from Mainsail
+
+Mainsail sends `SET_HEATER_TEMPERATURE HEATER=extruder1 TARGET=200` — another Klipper command the Snapmaker ignores. Temperature GCodes like `M104 S200 T1` were also unreliable through SACP's GCode executor.
+
+**Fix:** Added a shared `interceptGCode()` function called by both HTTP and WebSocket GCode handlers. It intercepts:
+- `SET_HEATER_TEMPERATURE` → routes to `SetToolTemperature()` / `SetBedTemperature()` via SACP binary protocol
+- `ACTIVATE_EXTRUDER` → sends `Tn` GCode and updates state
+- `TURN_OFF_HEATERS` → zeros all three heaters via SACP
+- `M104`/`M109` → parses T parameter, routes through SACP `SetToolTemperature()` (respects active extruder when no T param)
+- `M140`/`M190` → routes through SACP `SetBedTemperature()`
+
+Helper functions added: `extractKlipperParam()` for Klipper-style `KEY=value` parsing, `parseGCodeIntParam()` for single-letter GCode parameters.
+
+### Problem 3: GCode Post-Processor Dual-Extruder Bugs
+
+**Per-tool absolute E tracking:** `lastAbsE` was a single shared variable across both extruders. In absolute extrusion mode without `G92 E0` between tool changes, filament accounting for the second tool would be incorrect. Changed to `[2]float64` indexed by remapped tool.
+
+**Retraction values:** `retract_length` and `retract_length_toolchange` only parsed the first comma-separated value and applied it to both extruders. PrusaSlicer writes per-extruder values (e.g., `; retract_length = 0.8,1.0`). Now parses both values.
+
+### Problem 4: Temperature Graphs Blanking in Mainsail
+
+The `temperatureStore()` endpoint returned **empty arrays** every time. When Mainsail switched tabs or periodically refreshed, it got no history and the graph reset to empty, rebuilding slowly from live updates. This caused visible blanking every 5-10 seconds.
+
+**Fix:** Implemented a proper `TempStore` with a 1200-entry ring buffer per sensor (extruder, extruder1, heater_bed). Temperature readings are recorded every status broadcast (poll cycle). The `server.temperature_store` API now returns real historical data.
+
+New file: `moonraker/tempstore.go` — `TempStore` struct with `Record()` and `Snapshot()` methods, ring buffer with chronological ordering.
+
+### Problem 5: Z Offset / Baby-stepping — NOT SUPPORTED
+
+The user needed to adjust first-layer Z offset for TPU adhesion. No SACP command exists for Z offset. Investigated M290 (Marlin baby-stepping GCode) — the J1S accepts it (SACP result code 0) but **does not implement it**. Result code 0 only means "no parse error", not "command executed". The Snapmaker Marlin fork likely has `BABYSTEPPING` disabled in its configuration.
+
+**Resolution:** `SET_GCODE_OFFSET` is intercepted and silently accepted (returns success to Mainsail without sending anything to the printer) to prevent error messages. No actual Z offset functionality — the J1S firmware doesn't support it. Z offset must be set in the slicer or on the touchscreen before the bridge connects.
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `printer/state.go` | Added `ActiveExtruder`, `ZOffset` fields; `SetActiveExtruder()`, `AdjustZOffset()`, `SetZOffset()` methods |
+| `moonraker/objects.go` | `toolhead.extruder` dynamic from state; added `ACTIVATE_EXTRUDER` to gcode commands |
+| `moonraker/handler_printer.go` | `interceptGCode()` dispatcher; handlers for `ACTIVATE_EXTRUDER`, `SET_HEATER_TEMPERATURE`, `TURN_OFF_HEATERS`, `M104`/`M109`/`M140`/`M190`; `SET_GCODE_OFFSET` silently accepted (no firmware support); helper functions `extractKlipperParam()`, `parseGCodeIntParam()` |
+| `moonraker/websocket.go` | Calls `interceptGCode()` before forwarding to `ExecuteGCode()`; records temps to `TempStore` in `BroadcastStatusUpdate()` |
+| `moonraker/tempstore.go` | **New** — Ring buffer temperature store (1200 entries per sensor) |
+| `moonraker/server.go` | Added `tempStore` field, initialized in `NewServer()` |
+| `moonraker/handler_server.go` | `temperatureStore()` returns real data from `TempStore.Snapshot()` |
+| `gcode/process.go` | Per-tool `lastAbsE[2]`; per-extruder `retract_length`/`retract_length_toolchange` parsing |
+
+### Testing
+
+- Deployed three times during session, all successful
+- M290 baby-stepping: accepted by J1S (code 0) but confirmed non-functional — BABYSTEPPING disabled in firmware
+- Temperature store accumulates and returns data correctly
+- Service running stable with active print
+
+### Known Limitation: Z Baby-stepping
+
+The J1S firmware (Marlin 2.0.9.1 fork) does not implement M290 baby-stepping. The SACP GCode executor returns result code 0 for unimplemented commands (no parse error), which masks the fact that the command has no effect. Z offset adjustments must be done in the slicer or on the touchscreen before the bridge's SACP connection takes over.

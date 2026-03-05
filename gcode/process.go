@@ -99,7 +99,7 @@ func scanMetadata(lines []string) *metadata {
 
 	currentTool := 0
 	relative := false
-	var lastAbsE float64
+	var lastAbsE [2]float64 // per-tool absolute E position
 	var prevZ float64
 	zMoves := 0
 
@@ -150,10 +150,11 @@ func scanMetadata(lines []string) *metadata {
 
 		// G92 — position reset (track E axis for absolute extrusion).
 		if strings.HasPrefix(upper, "G92") {
+			remapped := currentTool % 2
 			for _, f := range strings.Fields(codePart) {
 				if len(f) >= 2 && (f[0] == 'E' || f[0] == 'e') {
 					if v, err := strconv.ParseFloat(f[1:], 64); err == nil {
-						lastAbsE = v
+						lastAbsE[remapped] = v
 					}
 				}
 			}
@@ -215,10 +216,10 @@ func scanMetadata(lines []string) *metadata {
 							meta.filamentMM[remapped] += val
 						}
 					} else {
-						if val > lastAbsE {
-							meta.filamentMM[remapped] += val - lastAbsE
+						if val > lastAbsE[remapped] {
+							meta.filamentMM[remapped] += val - lastAbsE[remapped]
 						}
-						lastAbsE = val
+						lastAbsE[remapped] = val
 					}
 				}
 			}
@@ -302,14 +303,26 @@ func scanComment(comment string, meta *metadata) {
 			}
 		}
 	case "retract_length":
-		if v, err := strconv.ParseFloat(strings.Split(val, ",")[0], 64); err == nil {
+		parts := strings.Split(val, ",")
+		if v, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64); err == nil {
 			meta.retraction[0] = v
-			meta.retraction[1] = v
+			meta.retraction[1] = v // default both to first value
+		}
+		if len(parts) > 1 {
+			if v, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); err == nil {
+				meta.retraction[1] = v
+			}
 		}
 	case "retract_length_toolchange":
-		if v, err := strconv.ParseFloat(strings.Split(val, ",")[0], 64); err == nil {
+		parts := strings.Split(val, ",")
+		if v, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64); err == nil {
 			meta.switchRetraction[0] = v
-			meta.switchRetraction[1] = v
+			meta.switchRetraction[1] = v // default both to first value
+		}
+		if len(parts) > 1 {
+			if v, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); err == nil {
+				meta.switchRetraction[1] = v
+			}
 		}
 	}
 }

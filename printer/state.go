@@ -46,6 +46,12 @@ type StateData struct {
 	// Fan
 	FanSpeed float64 `json:"fan_speed"` // 0.0 - 1.0
 
+	// Active extruder
+	ActiveExtruder string `json:"active_extruder"` // "extruder" or "extruder1"
+
+	// Z offset (baby-stepping)
+	ZOffset float64 `json:"z_offset"` // cumulative mm offset
+
 	// Raw status from printer HTTP API
 	RawStatus map[string]interface{} `json:"-"`
 }
@@ -60,10 +66,11 @@ type State struct {
 func NewState() *State {
 	return &State{
 		data: StateData{
-			PrinterState:  "idle",
-			HomedAxes:     "",
-			SpeedFactor:   1.0,
-			ExtrudeFactor: 1.0,
+			PrinterState:   "idle",
+			HomedAxes:      "",
+			SpeedFactor:    1.0,
+			ExtrudeFactor:  1.0,
+			ActiveExtruder: "extruder",
 		},
 	}
 }
@@ -73,6 +80,28 @@ func (s *State) Snapshot() StateData {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.data
+}
+
+// SetActiveExtruder updates the active extruder name.
+func (s *State) SetActiveExtruder(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.ActiveExtruder = name
+}
+
+// AdjustZOffset adds a delta to the Z offset and returns the new value.
+func (s *State) AdjustZOffset(delta float64) float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.ZOffset += delta
+	return s.data.ZOffset
+}
+
+// SetZOffset sets the absolute Z offset.
+func (s *State) SetZOffset(offset float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.ZOffset = offset
 }
 
 // StatePoller periodically polls the printer and updates state.

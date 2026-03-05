@@ -1,5 +1,27 @@
 # Release Notes
 
+## v0.2.0 — 2026-03-05
+
+### New Features
+
+- **Dual extruder control** — Select the active tool from Mainsail by clicking on extruder/extruder1 in the temperature panel. `ACTIVATE_EXTRUDER` commands are translated to SACP tool changes (T0/T1) and the active extruder is reflected in the Mainsail UI.
+- **Temperature control via Mainsail** — `SET_HEATER_TEMPERATURE`, `M104`/`M109`, `M140`/`M190`, and `TURN_OFF_HEATERS` are now intercepted and routed through the reliable SACP binary protocol instead of being forwarded as raw GCode. Setting extruder1 temperature from Mainsail now works correctly.
+- **Temperature history graph** — Implemented a 1200-reading ring buffer per sensor (extruder, extruder1, heater_bed). Mainsail temperature graphs now persist when switching browser tabs and no longer blank out periodically.
+
+### Bug Fixes
+
+- **Extruder1 temperature refused** — Mainsail sends Klipper-specific `SET_HEATER_TEMPERATURE HEATER=extruder1 TARGET=200` which the Snapmaker doesn't understand. Now intercepted and routed through SACP `SetToolTemperature()`.
+- **Active tool not reflected in UI** — `toolhead.extruder` was hardcoded to `"extruder"`. Now dynamically tracks the active extruder.
+- **Temperature graphs blanking** — The `server.temperature_store` API returned empty arrays, causing Mainsail to repeatedly clear and rebuild the graph. Now returns real historical data.
+- **GCode post-processor: shared E position across tools** — Absolute extrusion tracking (`lastAbsE`) was shared between both extruders, causing incorrect filament accounting in dual-extruder jobs without `G92 E0` resets between tool changes. Now tracked per-tool.
+- **GCode post-processor: retraction values** — `retract_length` and `retract_length_toolchange` only parsed the first comma-separated value for both extruders. Now correctly parses per-extruder values from slicer comments.
+
+### Known Limitations
+
+- **Z baby-stepping not supported** — The J1S firmware accepts `M290` (result code 0) but does not implement it. `SET_GCODE_OFFSET` is silently accepted to prevent Mainsail errors. Z offset must be adjusted in the slicer or on the touchscreen.
+
+---
+
 ## v0.1.1 — 2026-02-27
 
 ### Bug Fixes

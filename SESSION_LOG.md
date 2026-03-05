@@ -1628,3 +1628,15 @@ The user needed to adjust first-layer Z offset for TPU adhesion. No SACP command
 ### Known Limitation: Z Baby-stepping
 
 The J1S firmware (Marlin 2.0.9.1 fork) does not implement M290 baby-stepping. The SACP GCode executor returns result code 0 for unimplemented commands (no parse error), which masks the fact that the command has no effect. Z offset adjustments must be done in the slicer or on the touchscreen before the bridge's SACP connection takes over.
+
+### Problem 6: PrusaSlicer "Upload and Print" Doesn't Start Print
+
+PrusaSlicer's "Upload and Print" button sends `POST /server/files/upload` with a multipart form field `print=true`. The handler saved the file to disk and notified WebSocket clients, but never checked the `print` field — so the file was uploaded to the local gcode directory but never sent to the printer.
+
+**Fix:** After saving the file, check `r.FormValue("print") == "true"`. If set and root is `gcodes`, read the file back from storage and run the full SACP upload flow (gcode post-processing, upload, double-disconnect, StartScreenPrint) in a background goroutine — same pattern as `handlePrintStart`. Spoolman tracking is also initiated.
+
+### Files Changed (addendum)
+
+| File | Change |
+|------|--------|
+| `moonraker/handler_files.go` | Check `print=true` form field after upload; trigger SACP upload + print start in background |

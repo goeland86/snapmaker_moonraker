@@ -127,6 +127,24 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("File uploaded: %s/%s (%d bytes)", root, filename, len(data))
 
+	// PrusaSlicer/OrcaSlicer send print=true for "Upload and Print".
+	startPrint := r.FormValue("print") == "true"
+	if startPrint && root == "gcodes" {
+		log.Printf("Upload and print requested for %s", filename)
+		go func() {
+			fileData, err := s.fileManager.ReadFile("gcodes", filename)
+			if err != nil {
+				log.Printf("Error reading uploaded file for print: %v", err)
+				return
+			}
+			if err := s.printerClient.Upload(filename, fileData); err != nil {
+				log.Printf("Error uploading to printer: %v", err)
+				return
+			}
+			s.StartSpoolmanTracking(filename)
+		}()
+	}
+
 	// Notify WebSocket clients.
 	s.wsHub.BroadcastNotification("notify_filelist_changed", []interface{}{
 		map[string]interface{}{

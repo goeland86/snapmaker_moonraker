@@ -16,6 +16,10 @@
 - **GCode post-processor: shared E position across tools** — Absolute extrusion tracking (`lastAbsE`) was shared between both extruders, causing incorrect filament accounting in dual-extruder jobs without `G92 E0` resets between tool changes. Now tracked per-tool.
 - **GCode post-processor: retraction values** — `retract_length` and `retract_length_toolchange` only parsed the first comma-separated value for both extruders. Now correctly parses per-extruder values from slicer comments.
 
+### New Features (continued)
+
+- **PrusaSlicer "Upload and Print"** — The `print=true` form field on file uploads is now honored. PrusaSlicer and OrcaSlicer's "Upload and Print" button now uploads the file to the bridge, sends it to the printer via SACP, and starts printing automatically.
+
 ### Known Limitations
 
 - **Z baby-stepping not supported** — The J1S firmware accepts `M290` (result code 0) but does not implement it. `SET_GCODE_OFFSET` is silently accepted to prevent Mainsail errors. Z offset must be adjusted in the slicer or on the touchscreen.

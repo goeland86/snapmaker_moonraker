@@ -1694,3 +1694,32 @@ User reported the left extruder (T0) traveling too far right after priming. Ran 
 | `moonraker/handler_files.go` | Real `modified` timestamps in upload responses; `enrichMetadataFromHistory()` populates `print_start_time`/`job_id` |
 | `moonraker/websocket.go` | WebSocket metadata handler calls `enrichMetadataFromHistory()` |
 | `files/manager.go` | Add `StatFile()` method |
+
+### Security Hardening
+
+Performed a security audit of the codebase (excluding the known lack of Moonraker authentication). Identified and fixed 7 issues:
+
+1. **Path traversal in file move** (HIGH) — `MoveFile()` did raw `os.Rename()` with no bounds checking. Added validation that both source and dest resolve within gcodes or config root, matching the pattern already used by `DeleteFile`/`DeleteDirectory`.
+
+2. **Database namespace path traversal** (HIGH) — Namespace string was used directly in file path construction (`namespace + ".json"`). Added `validateNamespace()` rejecting empty strings, path separators, and `..` sequences. Applied at `loadNamespace()`, `saveNamespace()`, and `SetItem()`.
+
+3. **HTTP header injection in file download** (HIGH) — `Content-Disposition` header set directly from URL path. Fixed with `filepath.Base()` and quote/newline escaping per RFC 6266.
+
+4. **Systemctl action not validated** (HIGH) — Only the service name was allowlisted, but the action parameter was passed unchecked to `exec.Command`. Added allowlist for start/stop/restart. Also changed error response to generic message (log details server-side).
+
+5. **No WebSocket message size limit** (MEDIUM) — Added `conn.SetReadLimit(1 << 20)` (1 MB) after WebSocket upgrade to prevent memory exhaustion.
+
+6. **Unbounded JSON body parsing** (MEDIUM) — Database POST endpoint used `io.ReadAll(r.Body)` with no size limit. Changed to `io.LimitReader(r.Body, 1<<20)`.
+
+7. **Error message disclosure** (MEDIUM) — File save errors and systemctl output exposed internal paths/details to clients. Now logged server-side with generic messages returned to clients.
+
+### Files Changed (security)
+
+| File | Change |
+|------|--------|
+| `files/manager.go` | `MoveFile()` validates both paths stay within root directories |
+| `database/database.go` | `validateNamespace()` guards load/save/set against path traversal |
+| `moonraker/handler_files.go` | Sanitize Content-Disposition header; generic save error message |
+| `moonraker/handler_server.go` | Allowlist systemctl actions; generic error to client |
+| `moonraker/websocket.go` | 1 MB WebSocket read limit |
+| `moonraker/handler_database.go` | 1 MB body limit on database POST |

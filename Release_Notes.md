@@ -1,5 +1,19 @@
 # Release Notes
 
+## v0.2.1 — 2026-03-09
+
+### Security Hardening
+
+- **Path traversal in file move** — `MoveFile` now validates both source and destination resolve within allowed root directories (gcodes/config), matching existing checks on delete operations.
+- **Database namespace injection** — Namespace names containing path separators or `..` are rejected, preventing reads/writes outside the database directory.
+- **HTTP header injection** — Content-Disposition filename in file downloads is now sanitized with `filepath.Base()` and proper quoting.
+- **Systemctl action validation** — Only `start`, `stop`, and `restart` are accepted as service actions. Internal error details are logged server-side instead of being returned to clients.
+- **WebSocket read limit** — 1 MB maximum message size prevents memory exhaustion from oversized messages.
+- **Database body limit** — POST requests to the database endpoint are limited to 1 MB.
+- **Error disclosure** — File save errors and systemctl failures now return generic messages to clients with details logged server-side.
+
+---
+
 ## v0.2.0 — 2026-03-05
 
 ### New Features

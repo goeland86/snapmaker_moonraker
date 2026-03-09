@@ -1,5 +1,28 @@
 # Release Notes
 
+## v1.0.0 — 2026-03-09
+
+### Full Dual-Extruder Support
+
+The Snapmaker J1S is an IDEX printer with two independent extruders, and the bridge now fully supports both across all subsystems.
+
+#### Per-Extruder Spoolman Spool Tracking
+
+- **Independent spool per extruder** — Each tool (T0/T1) can be assigned a different Spoolman spool. Mainsail's Spoolman panel now supports selecting spools per extruder.
+- **Per-tool filament tracking** — Filament usage is parsed and reported per extruder. During a dual-material print, each tool's consumption is reported to its own spool independently.
+- **API `tool` parameter** — `get_spool_id` and `post_spool_id` endpoints (HTTP and WebSocket) accept a `tool` parameter (default 0 for backward compatibility).
+- **Legacy migration** — Existing single spool ID (`spoolman.spool_id`) is automatically migrated to tool 0 on first startup.
+
+#### Per-Extruder Fan Control
+
+- **Dual part fan objects** — Mainsail now shows separate `extruder_partfan` and `extruder1_partfan` fan objects with independent speed monitoring.
+- **Active extruder routing** — The primary `fan` object reports the active extruder's fan speed. `M106`/`M107` commands without a `P` parameter are routed to the active extruder's fan (matching Klipper behavior).
+- **M106/M107 interception** — Fan GCode commands are intercepted and routed with the correct `P` parameter for per-extruder control.
+- **SET_FAN_SPEED support** — Klipper-style `SET_FAN_SPEED FAN=extruder1_partfan SPEED=0.5` commands are handled with fan name mapping.
+- **Fan speed history** — Both fans are recorded in the temperature store, appearing on Mainsail's temperature graph.
+
+---
+
 ## v0.2.1 — 2026-03-09
 
 ### Security Hardening

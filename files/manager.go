@@ -268,15 +268,33 @@ func (m *Manager) DeleteFile(root, filename string) error {
 // ParseFilamentByLine reads a gcode file and returns cumulative filament extruded (mm)
 // indexed by line number (0-based). Handles both absolute (M82) and relative (M83) extrusion.
 func ParseFilamentByLine(path string) ([]float64, error) {
-	f, err := os.Open(path)
+	perTool, err := ParseFilamentByLinePerTool(path)
 	if err != nil {
 		return nil, err
 	}
+	// Sum both tools into a single cumulative array.
+	n := len(perTool[0])
+	result := make([]float64, n)
+	for i := 0; i < n; i++ {
+		result[i] = perTool[0][i] + perTool[1][i]
+	}
+	return result, nil
+}
+
+// ParseFilamentByLinePerTool reads a gcode file and returns per-tool cumulative filament
+// extruded (mm) indexed by line number (0-based). Returns [2][]float64 for T0 and T1.
+// Handles tool changes (T0/T1), absolute (M82) and relative (M83) extrusion modes.
+func ParseFilamentByLinePerTool(path string) ([2][]float64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return [2][]float64{}, err
+	}
 	defer f.Close()
 
-	var result []float64
-	var cumulative float64
-	var lastAbsE float64
+	var result [2][]float64
+	var cumulative [2]float64
+	var lastAbsE [2]float64
+	currentTool := 0
 	relative := false // default is absolute extrusion
 
 	scanner := bufio.NewScanner(f)
@@ -290,14 +308,27 @@ func ParseFilamentByLine(path string) ([]float64, error) {
 		line = strings.TrimSpace(line)
 
 		upper := strings.ToUpper(line)
+
+		// Tool change commands.
+		if len(upper) >= 2 && upper[0] == 'T' && upper[1] >= '0' && upper[1] <= '9' {
+			if t, err := strconv.Atoi(upper[1:]); err == nil {
+				currentTool = t % 2 // Remap T2/T3 -> T0/T1 consistent with gcode processor
+			}
+			result[0] = append(result[0], cumulative[0])
+			result[1] = append(result[1], cumulative[1])
+			continue
+		}
+
 		if upper == "M83" {
 			relative = true
-			result = append(result, cumulative)
+			result[0] = append(result[0], cumulative[0])
+			result[1] = append(result[1], cumulative[1])
 			continue
 		}
 		if upper == "M82" {
 			relative = false
-			result = append(result, cumulative)
+			result[0] = append(result[0], cumulative[0])
+			result[1] = append(result[1], cumulative[1])
 			continue
 		}
 
@@ -305,7 +336,8 @@ func ParseFilamentByLine(path string) ([]float64, error) {
 		if !strings.HasPrefix(upper, "G0 ") && !strings.HasPrefix(upper, "G1 ") &&
 			!strings.HasPrefix(upper, "G0\t") && !strings.HasPrefix(upper, "G1\t") &&
 			upper != "G0" && upper != "G1" {
-			result = append(result, cumulative)
+			result[0] = append(result[0], cumulative[0])
+			result[1] = append(result[1], cumulative[1])
 			continue
 		}
 
@@ -320,19 +352,21 @@ func ParseFilamentByLine(path string) ([]float64, error) {
 		}
 
 		if !math.IsNaN(eVal) {
+			t := currentTool
 			if relative {
 				if eVal > 0 {
-					cumulative += eVal
+					cumulative[t] += eVal
 				}
 			} else {
-				if eVal > lastAbsE {
-					cumulative += eVal - lastAbsE
+				if eVal > lastAbsE[t] {
+					cumulative[t] += eVal - lastAbsE[t]
 				}
-				lastAbsE = eVal
+				lastAbsE[t] = eVal
 			}
 		}
 
-		result = append(result, cumulative)
+		result[0] = append(result[0], cumulative[0])
+		result[1] = append(result[1], cumulative[1])
 	}
 
 	return result, scanner.Err()

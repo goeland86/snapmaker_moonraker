@@ -350,7 +350,7 @@ func (h *WSHub) handleRPC(client *WSClient, req *jsonRPCRequest) {
 		if h.server.spoolman == nil {
 			resp.Error = &rpcError{Code: -32601, Message: "Spoolman not configured"}
 		} else {
-			resp.Result = h.handleSpoolmanGetSpoolID()
+			resp.Result = h.handleSpoolmanGetSpoolID(req.Params)
 		}
 
 	case "server.spoolman.post_spool_id":

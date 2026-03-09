@@ -207,6 +207,12 @@ func (s *Server) interceptGCode(script string) (bool, error) {
 		return s.handleMSetExtruderTemp(script, cmd)
 	case "M140", "M190":
 		return s.handleMSetBedTemp(script)
+	case "M106":
+		return s.handleM106(script)
+	case "M107":
+		return s.handleM107(script)
+	case "SET_FAN_SPEED":
+		return s.handleSetFanSpeed(script)
 	}
 
 	return false, nil
@@ -356,6 +362,76 @@ func (s *Server) handleMSetBedTemp(script string) (bool, error) {
 	return true, s.printerClient.SetBedTemperature(0, temp)
 }
 
+// handleM106 handles M106 (set fan speed) with optional P parameter for fan index.
+// When no P is specified, targets the active extruder's fan (Klipper behavior).
+func (s *Server) handleM106(script string) (bool, error) {
+	speed := parseGCodeIntParam(script, 'S')
+	if speed < 0 {
+		speed = 255 // M106 with no S defaults to full speed
+	}
+
+	fanIndex := parseGCodeIntParam(script, 'P')
+	if fanIndex < 0 {
+		// No P parameter: use active extruder's fan.
+		snap := s.state.Snapshot()
+		if snap.ActiveExtruder == "extruder1" {
+			fanIndex = 1
+		} else {
+			fanIndex = 0
+		}
+	}
+
+	gcmd := fmt.Sprintf("M106 P%d S%d", fanIndex, speed)
+	_, err := s.printerClient.ExecuteGCode(gcmd)
+	return true, err
+}
+
+// handleM107 handles M107 (turn off fan) with optional P parameter.
+func (s *Server) handleM107(script string) (bool, error) {
+	fanIndex := parseGCodeIntParam(script, 'P')
+	if fanIndex < 0 {
+		snap := s.state.Snapshot()
+		if snap.ActiveExtruder == "extruder1" {
+			fanIndex = 1
+		} else {
+			fanIndex = 0
+		}
+	}
+
+	gcmd := fmt.Sprintf("M106 P%d S0", fanIndex)
+	_, err := s.printerClient.ExecuteGCode(gcmd)
+	return true, err
+}
+
+// handleSetFanSpeed handles Klipper-style SET_FAN_SPEED FAN=name SPEED=0.0-1.0.
+func (s *Server) handleSetFanSpeed(script string) (bool, error) {
+	fanName := extractKlipperParam(script, "FAN")
+	speedStr := extractKlipperParam(script, "SPEED")
+
+	speed := 0.0
+	if speedStr != "" {
+		if v, err := strconv.ParseFloat(speedStr, 64); err == nil {
+			speed = v
+		}
+	}
+
+	fanIndex := 0
+	switch fanName {
+	case "extruder1_partfan":
+		fanIndex = 1
+	case "extruder_partfan", "":
+		fanIndex = 0
+	}
+
+	s255 := int(speed * 255)
+	if s255 > 255 {
+		s255 = 255
+	}
+	gcmd := fmt.Sprintf("M106 P%d S%d", fanIndex, s255)
+	_, err := s.printerClient.ExecuteGCode(gcmd)
+	return true, err
+}
+
 // extractKlipperParam extracts a named parameter from a Klipper-style command.
 // e.g., extractKlipperParam("SET_HEATER_TEMPERATURE HEATER=extruder1 TARGET=200", "HEATER") = "extruder1"
 func extractKlipperParam(script string, param string) string {
@@ -424,21 +500,28 @@ func (s *Server) handlePrintStart(w http.ResponseWriter, r *http.Request) {
 
 // StartSpoolmanTracking initiates filament usage tracking if Spoolman is configured.
 func (s *Server) StartSpoolmanTracking(filename string) {
-	if s.spoolman == nil || s.spoolman.GetSpoolID() == 0 {
+	if s.spoolman == nil || !s.spoolman.HasAnySpool() {
 		return
 	}
 
 	gcodeDir := s.fileManager.GetRootPath("gcodes")
 	fullPath := filepath.Join(gcodeDir, filepath.FromSlash(filename))
 
-	filamentByLine, err := files.ParseFilamentByLine(fullPath)
+	filamentByTool, err := files.ParseFilamentByLinePerTool(fullPath)
 	if err != nil {
 		log.Printf("Spoolman: failed to parse filament data from %s: %v", filename, err)
 		return
 	}
 
-	if len(filamentByLine) > 0 && filamentByLine[len(filamentByLine)-1] > 0 {
-		s.spoolman.StartTracking(filamentByLine)
+	// Start tracking if at least one tool has filament data.
+	hasData := false
+	for t := 0; t < 2; t++ {
+		if len(filamentByTool[t]) > 0 && filamentByTool[t][len(filamentByTool[t])-1] > 0 {
+			hasData = true
+		}
+	}
+	if hasData {
+		s.spoolman.StartTracking(filamentByTool)
 	}
 }
 

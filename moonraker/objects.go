@@ -12,18 +12,20 @@ type PrinterObjects struct{}
 // BuildAll returns all printer objects for a full query.
 func (po *PrinterObjects) BuildAll(state printer.StateData) map[string]interface{} {
 	return map[string]interface{}{
-		"toolhead":       po.Toolhead(state),
-		"extruder":       po.Extruder(state, 0),
-		"extruder1":      po.Extruder(state, 1),
-		"heater_bed":     po.HeaterBed(state),
-		"gcode_move":     po.GCodeMove(state),
-		"print_stats":    po.PrintStats(state),
-		"virtual_sdcard": po.VirtualSDCard(state),
-		"webhooks":       po.Webhooks(state),
-		"fan":            po.Fan(state),
-		"heaters":        po.Heaters(state),
-		"display_status": po.DisplayStatus(state),
-		"gcode":          po.GCode(state),
+		"toolhead":                       po.Toolhead(state),
+		"extruder":                       po.Extruder(state, 0),
+		"extruder1":                      po.Extruder(state, 1),
+		"heater_bed":                     po.HeaterBed(state),
+		"gcode_move":                     po.GCodeMove(state),
+		"print_stats":                    po.PrintStats(state),
+		"virtual_sdcard":                 po.VirtualSDCard(state),
+		"webhooks":                       po.Webhooks(state),
+		"fan":                            po.Fan(state),
+		"fan_generic extruder_partfan":   po.FanGeneric(state, 0),
+		"fan_generic extruder1_partfan":  po.FanGeneric(state, 1),
+		"heaters":                        po.Heaters(state),
+		"display_status":                 po.DisplayStatus(state),
+		"gcode":                          po.GCode(state),
 	}
 }
 
@@ -80,6 +82,8 @@ func (po *PrinterObjects) AvailableObjects() []string {
 		"virtual_sdcard",
 		"webhooks",
 		"fan",
+		"fan_generic extruder_partfan",
+		"fan_generic extruder1_partfan",
 		"heaters",
 		"display_status",
 		"gcode",
@@ -200,17 +204,36 @@ func (po *PrinterObjects) Webhooks(state printer.StateData) map[string]interface
 }
 
 func (po *PrinterObjects) Fan(state printer.StateData) map[string]interface{} {
+	// Primary fan reports the active extruder's part fan speed.
+	speed := state.FanSpeed[0]
+	if state.ActiveExtruder == "extruder1" {
+		speed = state.FanSpeed[1]
+	}
 	return map[string]interface{}{
-		"speed": state.FanSpeed,
+		"speed": speed,
+		"rpm":   nil,
+	}
+}
+
+func (po *PrinterObjects) FanGeneric(state printer.StateData, index int) map[string]interface{} {
+	speed := 0.0
+	if index >= 0 && index < 2 {
+		speed = state.FanSpeed[index]
+	}
+	return map[string]interface{}{
+		"speed": speed,
 		"rpm":   nil,
 	}
 }
 
 func (po *PrinterObjects) Heaters(state printer.StateData) map[string]interface{} {
-	// Return list of available heaters and sensors
 	return map[string]interface{}{
 		"available_heaters": []string{"heater_bed", "extruder", "extruder1"},
-		"available_sensors": []string{"heater_bed", "extruder", "extruder1"},
+		"available_sensors": []string{
+			"heater_bed", "extruder", "extruder1",
+			"fan_generic extruder_partfan",
+			"fan_generic extruder1_partfan",
+		},
 	}
 }
 

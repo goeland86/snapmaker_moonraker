@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -22,16 +23,24 @@ func (s *Server) handleSpoolmanStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSpoolmanGetSpoolID(w http.ResponseWriter, r *http.Request) {
+	tool := 0
+	if t := r.URL.Query().Get("tool"); t != "" {
+		if v, err := strconv.Atoi(t); err == nil {
+			tool = v
+		}
+	}
 	writeJSON(w, map[string]interface{}{
 		"result": map[string]interface{}{
-			"spool_id": s.spoolman.GetSpoolID(),
+			"spool_id": s.spoolman.GetSpoolID(tool),
+			"tool":     tool,
 		},
 	})
 }
 
 func (s *Server) handleSpoolmanSetSpoolID(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		SpoolID int `json:"spool_id"`
+		SpoolID int  `json:"spool_id"`
+		Tool    *int `json:"tool,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, map[string]interface{}{
@@ -43,7 +52,12 @@ func (s *Server) handleSpoolmanSetSpoolID(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := s.spoolman.SetSpoolID(body.SpoolID); err != nil {
+	tool := 0
+	if body.Tool != nil {
+		tool = *body.Tool
+	}
+
+	if err := s.spoolman.SetSpoolID(body.SpoolID, tool); err != nil {
 		writeJSON(w, map[string]interface{}{
 			"error": map[string]interface{}{
 				"code":    500,
@@ -55,7 +69,8 @@ func (s *Server) handleSpoolmanSetSpoolID(w http.ResponseWriter, r *http.Request
 
 	writeJSON(w, map[string]interface{}{
 		"result": map[string]interface{}{
-			"spool_id": s.spoolman.GetSpoolID(),
+			"spool_id": s.spoolman.GetSpoolID(tool),
+			"tool":     tool,
 		},
 	})
 }
@@ -124,22 +139,26 @@ func (h *WSHub) handleSpoolmanStatus() interface{} {
 	return h.server.spoolman.Status()
 }
 
-func (h *WSHub) handleSpoolmanGetSpoolID() interface{} {
+func (h *WSHub) handleSpoolmanGetSpoolID(params interface{}) interface{} {
+	tool := extractIntParam(params, "tool")
 	return map[string]interface{}{
-		"spool_id": h.server.spoolman.GetSpoolID(),
+		"spool_id": h.server.spoolman.GetSpoolID(tool),
+		"tool":     tool,
 	}
 }
 
 func (h *WSHub) handleSpoolmanSetSpoolID(params interface{}) interface{} {
 	spoolID := extractIntParam(params, "spool_id")
+	tool := extractIntParam(params, "tool")
 
-	if err := h.server.spoolman.SetSpoolID(spoolID); err != nil {
+	if err := h.server.spoolman.SetSpoolID(spoolID, tool); err != nil {
 		log.Printf("Spoolman set spool ID error: %v", err)
 		return map[string]interface{}{"error": err.Error()}
 	}
 
 	return map[string]interface{}{
-		"spool_id": h.server.spoolman.GetSpoolID(),
+		"spool_id": h.server.spoolman.GetSpoolID(tool),
+		"tool":     tool,
 	}
 }
 

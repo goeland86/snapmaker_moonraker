@@ -1723,3 +1723,50 @@ Performed a security audit of the codebase (excluding the known lack of Moonrake
 | `moonraker/handler_server.go` | Allowlist systemctl actions; generic error to client |
 | `moonraker/websocket.go` | 1 MB WebSocket read limit |
 | `moonraker/handler_database.go` | 1 MB body limit on database POST |
+
+---
+
+# Session Log — 2026-03-09 (continued)
+
+## Objective
+Implement full dual-extruder support for Spoolman integration and per-extruder fan control.
+
+## What Was Done
+
+### 1. Per-Extruder Spoolman Spool Tracking
+
+The Spoolman integration previously tracked a single spool for the entire printer. Refactored to support independent spool assignments per extruder (T0/T1).
+
+- **Per-tool spool IDs** — `activeSpoolID int` replaced with `activeSpoolIDs [2]int`. Each extruder can be assigned a different spool from Mainsail's Spoolman panel.
+- **Per-tool filament tracking** — New `ParseFilamentByLinePerTool()` returns `[2][]float64`, tracking tool changes (`T0`/`T1`) and accumulating filament per extruder. `ReportUsage()` reports to each tool's spool independently.
+- **API with `tool` parameter** — HTTP and WebSocket `get_spool_id`/`post_spool_id` accept a `tool` parameter (default 0). Backward compatible.
+- **Legacy DB migration** — Old `spoolman.spool_id` key automatically migrated to `spoolman.spool_id.0` on first startup.
+- **Notifications** — `notify_active_spool_set` includes `tool` field.
+
+### 2. Per-Extruder Fan Control
+
+The bridge only reported a single fan speed and had no per-extruder fan objects. The J1S has separate part cooling fans per extruder, and the SACP data already delivered both — it was just being collapsed into one value.
+
+- **Per-extruder state** — `FanSpeed float64` changed to `FanSpeed [2]float64` in `StateData`.
+- **SACP fan extraction** — `GetStatus()` now extracts both part fans by `HeadID` instead of breaking after the first.
+- **Klipper fan objects** — Added `fan_generic extruder_partfan` and `fan_generic extruder1_partfan`. The primary `fan` object reports the active extruder's fan speed.
+- **M106/M107 interception** — Fan GCode commands routed to the correct extruder via `P` parameter. When no `P` is specified, targets the active extruder (Klipper behavior).
+- **SET_FAN_SPEED** — Klipper-style command handled with fan name mapping (`extruder_partfan` / `extruder1_partfan`).
+- **Fan speed history** — Both fan_generic sensors added to temperature store for Mainsail graph display.
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `spoolman/spoolman.go` | Per-tool spool IDs, per-tool tracking arrays, DB key migration, split reporting |
+| `files/manager.go` | `ParseFilamentByLinePerTool()` with tool change tracking; `ParseFilamentByLine()` delegates to it |
+| `moonraker/handler_spoolman.go` | `tool` parameter on HTTP and WebSocket spool_id endpoints |
+| `moonraker/handler_printer.go` | `StartSpoolmanTracking` uses per-tool parsing; M106/M107/SET_FAN_SPEED interception |
+| `main.go` | `onSpoolSet` callback includes tool index in notification |
+| `printer/state.go` | `FanSpeed` from `float64` to `[2]float64`; `parseStatus` reads per-tool fan keys |
+| `printer/client.go` | Fan extraction loops both fans by HeadID, emits `fan0Speed`/`fan1Speed` |
+| `moonraker/objects.go` | `fan_generic` objects; `Fan()` uses active extruder; `FanGeneric()` per-tool; `Heaters()` lists fan sensors |
+| `moonraker/tempstore.go` | Fan speed history for both fan_generic sensors |
+
+### Deploy Note
+- Correct binary path on Pi: `/opt/snapmaker-moonraker/snapmaker_moonraker` (not `/usr/local/bin/`)

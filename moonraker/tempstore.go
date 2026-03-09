@@ -30,7 +30,11 @@ func NewTempStore(n int) *TempStore {
 		size:    n,
 		sensors: make(map[string]*sensorStore),
 	}
-	for _, name := range []string{"extruder", "extruder1", "heater_bed"} {
+	for _, name := range []string{
+		"extruder", "extruder1", "heater_bed",
+		"fan_generic extruder_partfan",
+		"fan_generic extruder1_partfan",
+	} {
 		ts.sensors[name] = &sensorStore{
 			temperatures: make([]float64, n),
 			targets:      make([]float64, n),
@@ -48,6 +52,10 @@ func (ts *TempStore) Record(state printer.StateData) {
 	ts.record("extruder", state.Extruder0Temp, state.Extruder0Target)
 	ts.record("extruder1", state.Extruder1Temp, state.Extruder1Target)
 	ts.record("heater_bed", state.BedTemp, state.BedTarget)
+
+	// Fan speeds as percentage (0-100) for Mainsail graph display.
+	ts.record("fan_generic extruder_partfan", state.FanSpeed[0]*100, 0)
+	ts.record("fan_generic extruder1_partfan", state.FanSpeed[1]*100, 0)
 }
 
 func (ts *TempStore) record(name string, temp, target float64) {

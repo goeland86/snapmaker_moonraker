@@ -151,9 +151,9 @@ func main() {
 	if spoolmanMgr != nil {
 		hub := server.Hub()
 		spoolmanMgr = spoolman.NewManager(cfg.Spoolman.Server, db,
-			func(spoolID int) {
+			func(spoolID int, tool int) {
 				hub.BroadcastNotification("notify_active_spool_set", []interface{}{
-					map[string]interface{}{"spool_id": spoolID},
+					map[string]interface{}{"spool_id": spoolID, "tool": tool},
 				})
 			},
 			func(connected bool) {

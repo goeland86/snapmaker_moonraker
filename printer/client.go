@@ -798,12 +798,18 @@ func (c *Client) GetStatus() (map[string]interface{}, error) {
 		}
 	}
 
-	// Get part fan speed (fan type 0 = part fan). Convert 0-255 to 0-100%.
-	fanSpeed := 0.0
+	// Get per-extruder part fan speeds (fan type 0 = part fan). Convert 0-255 to 0-100%.
+	fan0Speed := 0.0
+	fan1Speed := 0.0
 	for _, f := range c.fanData {
 		if f.FanType == 0 {
-			fanSpeed = float64(f.Speed) / 255.0 * 100.0
-			break
+			speed := float64(f.Speed) / 255.0 * 100.0
+			switch f.HeadID {
+			case 0:
+				fan0Speed = speed
+			case 1:
+				fan1Speed = speed
+			}
 		}
 	}
 
@@ -816,7 +822,8 @@ func (c *Client) GetStatus() (map[string]interface{}, error) {
 		"x":           c.coordData.X,
 		"y":           c.coordData.Y,
 		"z":           c.coordData.Z,
-		"fanSpeed":    fanSpeed,
+		"fan0Speed":   fan0Speed,
+		"fan1Speed":   fan1Speed,
 		"homed":       c.coordData.Homed,
 	}
 

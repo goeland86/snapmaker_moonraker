@@ -43,8 +43,8 @@ type StateData struct {
 	ExtrudeFactor  float64 `json:"extrude_factor"`  // 1.0 = 100%
 	RequestedSpeed float64 `json:"requested_speed"` // mm/s
 
-	// Fan
-	FanSpeed float64 `json:"fan_speed"` // 0.0 - 1.0
+	// Fan (per-extruder part cooling fans)
+	FanSpeed [2]float64 `json:"fan_speed"` // 0.0 - 1.0 per extruder
 
 	// Active extruder
 	ActiveExtruder string `json:"active_extruder"` // "extruder" or "extruder1"
@@ -268,9 +268,10 @@ func (sp *StatePoller) parseStatus(status map[string]interface{}) {
 	// Duration: always update so it resets to 0 when print completes.
 	sp.state.data.PrintDuration = floatFromMap(status, "elapsedTime", "printTime")
 
-	// Fan speed (Snapmaker reports as percentage 0-100, convert to 0.0-1.0).
-	// Always update so it resets to 0 when fan stops.
-	sp.state.data.FanSpeed = floatFromMap(status, "fanSpeed", "fan") / 100.0
+	// Fan speeds (per-extruder, reported as percentage 0-100, convert to 0.0-1.0).
+	// Always update so they reset to 0 when fans stop.
+	sp.state.data.FanSpeed[0] = floatFromMap(status, "fan0Speed") / 100.0
+	sp.state.data.FanSpeed[1] = floatFromMap(status, "fan1Speed") / 100.0
 
 	// Homed axes: set from coordinate query data.
 	if v, ok := status["homed"].(bool); ok && v {

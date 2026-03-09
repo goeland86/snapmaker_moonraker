@@ -2,9 +2,11 @@ package moonraker
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -124,7 +126,8 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.fileManager.SaveFile(root, filename, data); err != nil {
-		http.Error(w, "failed to save file: "+err.Error(), http.StatusInternalServerError)
+		log.Printf("Failed to save file %s/%s: %v", root, filename, err)
+		http.Error(w, "failed to save file", http.StatusInternalServerError)
 		return
 	}
 
@@ -380,7 +383,8 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 
-	w.Header().Set("Content-Disposition", "attachment; filename="+path)
+	safeName := strings.NewReplacer(`"`, `\"`, `\`, `\\`, "\r", "", "\n", "").Replace(filepath.Base(path))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, safeName))
 	w.Write(data)
 }
 

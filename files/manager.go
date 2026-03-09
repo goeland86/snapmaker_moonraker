@@ -220,7 +220,22 @@ func (m *Manager) DeleteDirectory(root, dirPath string) error {
 }
 
 // MoveFile moves/renames a file or directory.
+// Both paths must resolve within a known root directory (gcodes or config).
 func (m *Manager) MoveFile(source, dest string) error {
+	absSrc, _ := filepath.Abs(source)
+	absDst, _ := filepath.Abs(dest)
+	absGcode, _ := filepath.Abs(m.gcodeDir)
+	absConfig, _ := filepath.Abs(m.configDir)
+
+	srcOk := strings.HasPrefix(absSrc, absGcode+string(filepath.Separator)) || strings.HasPrefix(absSrc, absConfig+string(filepath.Separator))
+	dstOk := strings.HasPrefix(absDst, absGcode+string(filepath.Separator)) || strings.HasPrefix(absDst, absConfig+string(filepath.Separator))
+	if !srcOk || !dstOk {
+		return fmt.Errorf("invalid path")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return fmt.Errorf("creating destination directory: %w", err)
+	}
 	return os.Rename(source, dest)
 }
 

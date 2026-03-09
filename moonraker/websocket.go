@@ -156,6 +156,8 @@ func (h *WSHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	conn.SetReadLimit(1 << 20) // 1 MB max message size
+
 	client := &WSClient{
 		conn:       conn,
 		subscribed: make(map[string]interface{}),

@@ -49,8 +49,19 @@ func New(dataDir string) (*Database, error) {
 	return db, nil
 }
 
+// validateNamespace rejects namespace names that could escape the data directory.
+func validateNamespace(namespace string) error {
+	if namespace == "" || strings.ContainsAny(namespace, `/\`) || strings.Contains(namespace, "..") {
+		return fmt.Errorf("invalid namespace: %s", namespace)
+	}
+	return nil
+}
+
 // loadNamespace loads a namespace from disk into cache.
 func (db *Database) loadNamespace(namespace string) error {
+	if err := validateNamespace(namespace); err != nil {
+		return err
+	}
 	path := filepath.Join(db.dataDir, namespace+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -71,6 +82,9 @@ func (db *Database) loadNamespace(namespace string) error {
 
 // saveNamespace persists a namespace to disk.
 func (db *Database) saveNamespace(namespace string) error {
+	if err := validateNamespace(namespace); err != nil {
+		return err
+	}
 	ns, ok := db.cache[namespace]
 	if !ok {
 		return nil
@@ -120,6 +134,10 @@ func (db *Database) GetNamespace(namespace string) (map[string]interface{}, bool
 // SetItem stores a value by namespace and key.
 // Key can use dot notation for nested access.
 func (db *Database) SetItem(namespace, key string, value interface{}) error {
+	if err := validateNamespace(namespace); err != nil {
+		return err
+	}
+
 	db.mu.Lock()
 	defer db.mu.Unlock()
 

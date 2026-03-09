@@ -380,6 +380,13 @@ func (s *Server) printerServiceAction(action string) error {
 
 // machineServiceAction executes a systemctl action on an allowed service.
 func machineServiceAction(action, service string) error {
+	switch action {
+	case "start", "stop", "restart":
+		// allowed
+	default:
+		return fmt.Errorf("action %q is not allowed", action)
+	}
+
 	if service == "" {
 		return fmt.Errorf("missing service parameter")
 	}
@@ -398,7 +405,8 @@ func machineServiceAction(action, service string) error {
 	log.Printf("Service %s: %s", action, service)
 	cmd := exec.Command("sudo", "systemctl", action, service)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("systemctl %s %s failed: %s (%w)", action, service, strings.TrimSpace(string(out)), err)
+		log.Printf("systemctl %s %s failed: %s (%v)", action, service, strings.TrimSpace(string(out)), err)
+		return fmt.Errorf("service action failed")
 	}
 	return nil
 }

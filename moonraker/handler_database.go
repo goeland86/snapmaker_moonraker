@@ -83,7 +83,7 @@ func (s *Server) handleDatabasePostItem(w http.ResponseWriter, r *http.Request) 
 
 	if strings.HasPrefix(contentType, "application/json") {
 		// JSON body
-		body, err := io.ReadAll(r.Body)
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MB limit
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "failed to read request body")
 			return

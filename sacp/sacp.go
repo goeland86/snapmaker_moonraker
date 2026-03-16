@@ -713,6 +713,23 @@ func Home(conn net.Conn, timeout time.Duration) error {
 	return SendCommand(conn, 0x01, 0x35, data, timeout)
 }
 
+// IDEXMode constants for SetPrintMode.
+const (
+	IDEXModeDefault     byte = 0
+	IDEXModeBackup      byte = 1
+	IDEXModeDuplication byte = 2
+	IDEXModeMirror      byte = 3
+)
+
+// SetPrintMode sends the IDEX mode command (CommandSet 0xAC, CommandID 0x0A)
+// to set the printer's extruder mode before starting a print.
+// mode: 0=Default, 1=Backup, 2=Duplication, 3=Mirror.
+func SetPrintMode(conn net.Conn, mode byte, timeout time.Duration) error {
+	data := bytes.Buffer{}
+	data.WriteByte(mode)
+	return SendCommand(conn, 0xAC, 0x0A, data, timeout)
+}
+
 // StartScreenPrint sends the "start screen print" command (0xB0/0x08) to the
 // screen MCU after a file has been uploaded, triggering the printer to begin printing.
 // headType: 0=FDM printing, 1=CNC, 2=laser.

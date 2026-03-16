@@ -1770,3 +1770,61 @@ The bridge only reported a single fan speed and had no per-extruder fan objects.
 
 ### Deploy Note
 - Correct binary path on Pi: `/opt/snapmaker-moonraker/snapmaker_moonraker` (not `/usr/local/bin/`)
+
+---
+
+# Session Log — 2026-03-16
+
+## Objective
+Add IDEX Copy/Mirror mode support — PrusaSlicer profiles and GCode post-processor fix so the J1S HMI activates the correct IDEX mode when printing.
+
+## What Was Done
+
+### 1. PrusaSlicer IDEX Profiles
+
+Created complete PrusaSlicer profile sets for IDEX Copy and Mirror modes:
+
+- **Printer profiles** — `Snapmaker J1 Copy (0.4 nozzle).ini` and `Snapmaker J1 Mirror (0.4 nozzle).ini` with half-bed dimensions (150x200mm), dual nozzle config, custom start/end gcode with M605 S2/S3 activation and LED sequence.
+- **Physical printer profiles** — `Snappy IDEXCopy.ini` and `Snappy IDEXMirr.ini` connecting to `snapmaker.local` via Moonraker.
+- **Print profiles** — 8 user-level profiles (0.08 Extra Fine through 0.28 Extra Draft) that inherit from vendor J1 profiles and are explicitly linked to the IDEX printer profiles via `compatible_printers`.
+- All 12 profiles stored in `PrusaSlicer_profile/` in the project repo.
+
+### 2. Root Cause: IDEX Mode Not Activating
+
+After test printing with the Copy profile, only T0 printed — T1 stayed idle despite both nozzles heating. Root cause identified:
+
+- The GCode post-processor (`gcode/process.go` `buildHeaderV1()`) hardcoded `;Extruder Mode:Default` in the V1 header.
+- The J1S HMI reads this header field to set the IDEX mode **before** executing any GCode.
+- M605 S2 in the GCode body was effectively overridden by the header.
+
+### 3. Fix 1: GCode Post-Processor (critical)
+
+- Added `idexMode string` field to the `metadata` struct.
+- `scanMetadata()` now detects `M605 S2` → `"Duplication"` and `M605 S3` → `"Mirror"`.
+- `buildHeaderV1()` uses the detected mode for `;Extruder Mode:` instead of hardcoded `"Default"`.
+- Added IDEX mode to the scan log line for diagnostics.
+
+### 4. Fix 2: SACP IDEX Mode Command (belt-and-suspenders)
+
+- Added `SetPrintMode()` to `sacp/sacp.go` — sends command `0xAC/0x0A` with 1-byte payload (0=Default, 1=Backup, 2=Duplication, 3=Mirror).
+- Added `detectIDEXMode()` helper in `printer/client.go` that reads the `;Extruder Mode:` line from the processed GCode V1 header.
+- `Upload()` now sends the SACP IDEX mode command after reconnecting and before `StartScreenPrint`, ensuring the controller is in the correct mode.
+
+### 5. Spoolman Multi-Extruder Investigation
+
+Investigated user report that separate spools can't be selected per extruder. Finding: the **backend** fully supports per-extruder tracking (tool parameter on API), but **Mainsail only supports a single active spool** — there's no per-extruder UI. This matches real Moonraker's limitation (single `spool_id`, no `tool` parameter). For IDEX Copy/Mirror, both heads use the same filament, so single-spool tracking is adequate.
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `gcode/process.go` | `idexMode` field on metadata; M605 detection in scanMetadata; dynamic Extruder Mode in buildHeaderV1 |
+| `sacp/sacp.go` | `IDEXMode*` constants; `SetPrintMode()` function (0xAC/0x0A) |
+| `printer/client.go` | `detectIDEXMode()` helper; SACP mode command before StartScreenPrint |
+| `PrusaSlicer_profile/` | 12 new IDEX profile files (2 printer, 2 physical, 8 print) |
+
+### SACP Reference
+
+- **Set IDEX Mode**: CommandSet `0xAC`, CommandID `0x0A`, 1-byte payload
+  - `0x00` = Default, `0x01` = Backup, `0x02` = Duplication, `0x03` = Mirror
+- Source: SnapmakerController-IDEX firmware (`print_control.cpp`)

@@ -1,5 +1,29 @@
 # Release Notes
 
+## v1.1.0 — 2026-03-16
+
+### IDEX Copy & Mirror Mode Support
+
+The Snapmaker J1S supports IDEX Copy (Duplication) and Mirror modes, where both toolheads print simultaneously. This release adds full support for activating these modes through PrusaSlicer and the upload pipeline.
+
+#### GCode Post-Processor: IDEX Mode Detection
+
+- **M605 detection** — The GCode scanner now detects `M605 S2` (Duplication/Copy) and `M605 S3` (Mirror) commands during metadata extraction.
+- **V1 header fix** — The `;Extruder Mode:` field in the Snapmaker V1 header is now set dynamically based on the detected M605 command, instead of being hardcoded to `Default`. This was the root cause of IDEX modes not activating — the J1S HMI reads this header to set the mode before executing GCode.
+
+#### SACP IDEX Mode Command
+
+- **SetPrintMode (0xAC/0x0A)** — New SACP command sends the IDEX mode byte (0=Default, 2=Duplication, 3=Mirror) to the controller before starting a print, as an additional reliability measure alongside the V1 header.
+
+#### PrusaSlicer IDEX Profiles
+
+- **Printer profiles** — Pre-configured profiles for Copy and Mirror modes with half-bed dimensions (150×200mm), dual nozzle config, and proper M605 start/end GCode.
+- **Print profiles** — 8 quality presets (0.08mm–0.28mm) inheriting from vendor J1 settings, linked to the IDEX printer profiles.
+- **Physical printer profiles** — Moonraker connection profiles for both modes.
+- All profiles included in `PrusaSlicer_profile/` for easy import.
+
+---
+
 ## v1.0.0 — 2026-03-09
 
 ### Full Dual-Extruder Support

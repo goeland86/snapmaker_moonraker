@@ -30,6 +30,7 @@ type metadata struct {
 	maxToolNum       int
 	lastToolLine     [2]int // last line index where each (remapped) tool is active
 	thumbnail        string // data URI (data:image/png;base64,...) extracted from slicer thumbnails
+	idexMode         string // IDEX mode detected from M605: "Default", "Duplication", "Mirror"
 }
 
 // Process takes raw gcode data and a printer model string, and returns
@@ -64,10 +65,14 @@ func Process(data []byte, printerModel string) []byte {
 		log.Printf("gcode: extracted thumbnail (%d bytes)", len(thumbnail))
 	}
 
-	log.Printf("gcode: scanned %d lines — tools=%v maxTool=T%d temps=[%.0f,%.0f] bed=%.0f filament=[%.1f,%.1f]mm est=%.0fs",
+	idexLabel := "Default"
+	if meta.idexMode != "" {
+		idexLabel = meta.idexMode
+	}
+	log.Printf("gcode: scanned %d lines — tools=%v maxTool=T%d temps=[%.0f,%.0f] bed=%.0f filament=[%.1f,%.1f]mm est=%.0fs idex=%s",
 		len(lines), meta.toolsUsed, meta.maxToolNum,
 		meta.nozzleTemp[0], meta.nozzleTemp[1], meta.bedTemp,
-		meta.filamentMM[0], meta.filamentMM[1], meta.estimatedTime)
+		meta.filamentMM[0], meta.filamentMM[1], meta.estimatedTime, idexLabel)
 
 	// Pass 2: transform lines (tool remap + nozzle shutoff).
 	transformed := transformLines(lines, meta)
@@ -155,6 +160,22 @@ func scanMetadata(lines []string) *metadata {
 				if len(f) >= 2 && (f[0] == 'E' || f[0] == 'e') {
 					if v, err := strconv.ParseFloat(f[1:], 64); err == nil {
 						lastAbsE[remapped] = v
+					}
+				}
+			}
+		}
+
+		// IDEX mode: M605 S0=default, S2=duplication/copy, S3=mirror.
+		if strings.HasPrefix(upper, "M605") {
+			for _, f := range strings.Fields(codePart) {
+				if len(f) >= 2 && (f[0] == 'S' || f[0] == 's') {
+					if v, err := strconv.Atoi(f[1:]); err == nil {
+						switch v {
+						case 2:
+							meta.idexMode = "Duplication"
+						case 3:
+							meta.idexMode = "Mirror"
+						}
 					}
 				}
 			}
@@ -490,10 +511,10 @@ const v1HeaderLines = 25
 // buildHeaderV1 generates the Snapmaker V1 header format used by J1/J1S.
 // This is the format the J1S HMI requires to index and display files.
 func buildHeaderV1(meta *metadata, totalLines int) string {
-	// Extruder mode.
+	// Extruder mode: use M605-detected IDEX mode, or fall back to Default.
 	extruderMode := "Default"
-	if meta.toolsUsed[0] && meta.toolsUsed[1] {
-		extruderMode = "Default" // dual-extrusion default; IDEX modes not detectable from gcode alone
+	if meta.idexMode != "" {
+		extruderMode = meta.idexMode
 	}
 
 	// Extruders used count: 1 or 2.

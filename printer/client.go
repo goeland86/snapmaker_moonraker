@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -681,11 +682,55 @@ func (c *Client) Upload(filename string, data []byte) error {
 		return nil
 	}
 
+	// Set IDEX mode via SACP if the gcode requests Duplication or Mirror mode.
+	// The V1 header tells the HMI, but sending the SACP command as well ensures
+	// the controller is in the correct mode before the print starts.
+	if idexMode := detectIDEXMode(data); idexMode != sacp.IDEXModeDefault {
+		modeNames := map[byte]string{
+			sacp.IDEXModeDuplication: "Duplication",
+			sacp.IDEXModeMirror:     "Mirror",
+			sacp.IDEXModeBackup:     "Backup",
+		}
+		log.Printf("Setting IDEX mode: %s (0x%02x)", modeNames[idexMode], idexMode)
+		if err := c.sendCommand(0xAC, 0x0A, []byte{idexMode}); err != nil {
+			log.Printf("SetPrintMode failed (non-fatal): %v", err)
+		}
+	}
+
 	// Start the print on the fresh connection. The file is now indexed by the HMI.
 	log.Printf("Starting print: filename=%q md5=%s", uploadName, md5hex)
 	c.startPrint(uploadName, md5hex)
 
 	return nil
+}
+
+// detectIDEXMode scans the processed gcode V1 header for the ";Extruder Mode:" line
+// and returns the corresponding SACP IDEX mode byte.
+func detectIDEXMode(processedGcode []byte) byte {
+	// Only need to scan the header (first ~30 lines).
+	header := string(processedGcode)
+	if idx := strings.Index(header, ";Header End"); idx >= 0 {
+		header = header[:idx]
+	} else if len(header) > 2048 {
+		header = header[:2048]
+	}
+
+	for _, line := range strings.Split(header, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, ";Extruder Mode:") {
+			mode := strings.TrimPrefix(line, ";Extruder Mode:")
+			switch mode {
+			case "Duplication":
+				return sacp.IDEXModeDuplication
+			case "Mirror":
+				return sacp.IDEXModeMirror
+			case "Backup":
+				return sacp.IDEXModeBackup
+			}
+			return sacp.IDEXModeDefault
+		}
+	}
+	return sacp.IDEXModeDefault
 }
 
 // startPrint sends the StartScreenPrint command on the current connection.

@@ -152,8 +152,13 @@ func main() {
 		hub := server.Hub()
 		spoolmanMgr = spoolman.NewManager(cfg.Spoolman.Server, db,
 			func(spoolID int, tool int) {
+				// Send null instead of 0 for "no spool" — Mainsail expects null.
+				var id interface{} = spoolID
+				if spoolID == 0 {
+					id = nil
+				}
 				hub.BroadcastNotification("notify_active_spool_set", []interface{}{
-					map[string]interface{}{"spool_id": spoolID, "tool": tool},
+					map[string]interface{}{"spool_id": id, "tool": tool},
 				})
 			},
 			func(connected bool) {

@@ -31,7 +31,7 @@ func (s *Server) handleSpoolmanGetSpoolID(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, map[string]interface{}{
 		"result": map[string]interface{}{
-			"spool_id": s.spoolman.GetSpoolID(tool),
+			"spool_id": spoolIDOrNull(s.spoolman.GetSpoolID(tool)),
 			"tool":     tool,
 		},
 	})
@@ -69,10 +69,19 @@ func (s *Server) handleSpoolmanSetSpoolID(w http.ResponseWriter, r *http.Request
 
 	writeJSON(w, map[string]interface{}{
 		"result": map[string]interface{}{
-			"spool_id": s.spoolman.GetSpoolID(tool),
+			"spool_id": spoolIDOrNull(s.spoolman.GetSpoolID(tool)),
 			"tool":     tool,
 		},
 	})
+}
+
+// spoolIDOrNull converts a spool ID to nil if it's 0 (no spool),
+// so JSON marshals as null instead of 0 — Mainsail expects null for "no spool".
+func spoolIDOrNull(id int) interface{} {
+	if id == 0 {
+		return nil
+	}
+	return id
 }
 
 func (s *Server) handleSpoolmanProxy(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +151,7 @@ func (h *WSHub) handleSpoolmanStatus() interface{} {
 func (h *WSHub) handleSpoolmanGetSpoolID(params interface{}) interface{} {
 	tool := extractIntParam(params, "tool")
 	return map[string]interface{}{
-		"spool_id": h.server.spoolman.GetSpoolID(tool),
+		"spool_id": spoolIDOrNull(h.server.spoolman.GetSpoolID(tool)),
 		"tool":     tool,
 	}
 }
@@ -157,7 +166,7 @@ func (h *WSHub) handleSpoolmanSetSpoolID(params interface{}) interface{} {
 	}
 
 	return map[string]interface{}{
-		"spool_id": h.server.spoolman.GetSpoolID(tool),
+		"spool_id": spoolIDOrNull(h.server.spoolman.GetSpoolID(tool)),
 		"tool":     tool,
 	}
 }

@@ -142,11 +142,32 @@ func (m *Manager) HasAnySpool() bool {
 func (m *Manager) Status() map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
+	// Build tool_spool_map for multi-tool frontends (Mainsail).
+	// Keys are string-encoded tool indices, values are spool IDs.
+	toolSpoolMap := map[string]interface{}{}
+	for t := 0; t < 2; t++ {
+		if m.activeSpoolIDs[t] > 0 {
+			toolSpoolMap[fmt.Sprintf("%d", t)] = m.activeSpoolIDs[t]
+		} else {
+			toolSpoolMap[fmt.Sprintf("%d", t)] = nil
+		}
+	}
+
 	return map[string]interface{}{
 		"spoolman_connected": m.connected,
 		"pending_reports":    []interface{}{},
-		"spool_id":           m.activeSpoolIDs[0], // backward compat
+		"spool_id":           spoolIDOrNil(m.activeSpoolIDs[0]), // backward compat
+		"tool_spool_map":     toolSpoolMap,
 	}
+}
+
+// spoolIDOrNil converts a spool ID to nil if 0 (no spool), so JSON marshals as null.
+func spoolIDOrNil(id int) interface{} {
+	if id == 0 {
+		return nil
+	}
+	return id
 }
 
 // Proxy forwards a request to the Spoolman server and returns the response.

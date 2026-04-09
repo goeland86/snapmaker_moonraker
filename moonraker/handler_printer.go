@@ -201,6 +201,11 @@ func (s *Server) interceptGCode(script string) (bool, error) {
 		// but has no effect — BABYSTEPPING is likely disabled in Snapmaker's
 		// Marlin configuration. Ignore silently so Mainsail doesn't error.
 		return true, nil
+	case "SAVE_VARIABLE":
+		// Klipper-only command (requires [save_variables] section). Silently
+		// accept so the NFC spoolman daemon can run with klipper_variables=true
+		// without generating errors on the Snapmaker.
+		return true, nil
 	case "TURN_OFF_HEATERS":
 		return s.handleTurnOffHeaters()
 	case "M104", "M109":

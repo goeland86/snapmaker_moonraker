@@ -1,5 +1,13 @@
 # Release Notes
 
+## v1.2.0 — 2026-04-09
+
+### NFC Spoolman Daemon Compatibility
+
+- **Silently accept `SAVE_VARIABLE` commands** — The klipper-nfc daemon sends `SAVE_VARIABLE` GCode commands when `klipper_variables=true` to push filament metadata to Klipper macros. These are now silently accepted instead of being forwarded to the Snapmaker (which would generate errors). This allows the NFC daemon to run with a single config against both Klipper and the snapmaker_moonraker bridge.
+
+---
+
 ## v1.1.0 — 2026-03-16
 
 ### IDEX Copy & Mirror Mode Support

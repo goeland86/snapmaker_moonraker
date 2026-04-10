@@ -1,6 +1,11 @@
 # Release Notes
 
-## v1.2.0 — 2026-04-09
+## v1.3.0 — 2026-04-10
+
+### Fix IDEX Copy/Mirror Mode — Both Toolheads Now Print
+
+- **Fix `;Extruder Mode:` header value** — The V1 header wrote `Duplication` / `Mirror` but the J1S Screen MCU expects `IDEX Duplication` / `IDEX Mirror` (matching Luban and SMFix). The Screen MCU parses this header before starting a print and sends its own `SetPrintMode` SACP command to the Controller — with the wrong string, it overrode the bridge's correctly-sent mode back to Default, causing only T0 to extrude while T1 stayed idle despite heating.
+- **Force both extruders in header for IDEX modes** — In Copy/Mirror mode the slicer only generates T0 commands (T1 is firmware-driven), so the post-processor now forces T1 as used and copies T0's temperature/material/retraction settings to T1's header fields.
 
 ### NFC Spoolman Daemon Compatibility
 

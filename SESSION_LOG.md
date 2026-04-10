@@ -1828,3 +1828,63 @@ Investigated user report that separate spools can't be selected per extruder. Fi
 - **Set IDEX Mode**: CommandSet `0xAC`, CommandID `0x0A`, 1-byte payload
   - `0x00` = Default, `0x01` = Backup, `0x02` = Duplication, `0x03` = Mirror
 - Source: SnapmakerController-IDEX firmware (`print_control.cpp`)
+
+---
+
+## Session — 2026-04-10: Fix IDEX Copy/Mirror Mode, NFC Compatibility
+
+### Objective
+Fix IDEX Copy mode only printing with T0 (T1 heated but didn't extrude), and add NFC spoolman daemon compatibility.
+
+### Problem: IDEX Copy Mode — Only T0 Extruding
+
+After uploading a Copy mode file via the bridge, both nozzles heated but only T0 printed. T1 stayed idle.
+
+### Root Cause: Wrong `;Extruder Mode:` Header String
+
+The J1S has a three-processor architecture (Controller, Screen MCU, external software). When `StartScreenPrint` (0xB0/0x08) is sent to the Screen MCU:
+
+1. Screen MCU parses the V1 header's `;Extruder Mode:` field
+2. Screen MCU sends its own `SetPrintMode` (0xAC/0x0A) to the Controller based on the parsed mode
+3. Screen MCU sends `StartWork` (0xAC/0x03) to the Controller
+
+The bridge wrote `;Extruder Mode:Duplication` but the Screen MCU expects `;Extruder Mode:IDEX Duplication` (matching Luban and SMFix). With the unrecognized string, the Screen MCU sent `SetPrintMode(0)` (Default), **overwriting** the bridge's correctly-sent `SetPrintMode(2)`.
+
+Without mode=2 at startup, `print_control.start()` skipped the IDEX setup — `first_start_gcode` was never set to `true`, so `dual_x_carriage_unpark()` was never called, and `set_duplication_enabled(true)` never ran. T1's extruder motor never mirrored T0.
+
+M605 S2 in the GCode body did execute and set `dual_x_carriage_mode = DXC_DUPLICATION_MODE`, but without `first_start_gcode`, the unpark path for DXC_DUPLICATION_MODE was blocked by the `x_first_move == false` check in `prepare_move_to_destination()`.
+
+### Research Sources
+- SnapmakerController-IDEX: `print_control.cpp` (`start()`, `set_printer_mode()`), `M605.cpp`, `motion.cpp` (`prepare_move_to_destination`)
+- Luban: `SacpClient.ts`, `printing/index.ts` (mode strings: `Default`, `IDEX Backup`, `IDEX Duplication`, `IDEX Mirror`)
+- SMFix: `fix/const.go` (same mode strings)
+
+### Fix 1: Correct Header Mode Strings
+
+`gcode/process.go` — `scanMetadata()`:
+- `"Duplication"` → `"IDEX Duplication"`
+- `"Mirror"` → `"IDEX Mirror"`
+
+`printer/client.go` — `detectIDEXMode()`:
+- Updated case strings to match
+
+### Fix 2: Force Both Extruders for IDEX Modes
+
+`gcode/process.go` — `scanMetadata()`: When IDEX mode is Duplication or Mirror, force `toolsUsed[1] = true` and copy T0's settings (temp, material, retraction) to T1. Without this, the header reported `Extruder(s) Used:1` with T1 material="-" and temp=0.
+
+### Fix 3: NFC Spoolman Daemon Compatibility
+
+`moonraker/handler_printer.go` — `interceptGCode()`: Added `SAVE_VARIABLE` case that silently accepts the command. The klipper-nfc daemon sends multi-line `SAVE_VARIABLE` commands when `klipper_variables=true`; these are Klipper-only and would generate errors on the Snapmaker.
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `gcode/process.go` | Fix mode strings to `IDEX Duplication`/`IDEX Mirror`; force T1 used in IDEX modes |
+| `printer/client.go` | Update `detectIDEXMode()` case strings |
+| `moonraker/handler_printer.go` | Silently accept `SAVE_VARIABLE` GCode |
+| `Release_Notes.md` | v1.3.0 release notes |
+
+### Testing
+- Copy mode print: both toolheads printing ✅
+- NFC daemon: `SAVE_VARIABLE` silently accepted ✅

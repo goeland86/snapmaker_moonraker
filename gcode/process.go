@@ -172,9 +172,9 @@ func scanMetadata(lines []string) *metadata {
 					if v, err := strconv.Atoi(f[1:]); err == nil {
 						switch v {
 						case 2:
-							meta.idexMode = "Duplication"
+							meta.idexMode = "IDEX Duplication"
 						case 3:
-							meta.idexMode = "Mirror"
+							meta.idexMode = "IDEX Mirror"
 						}
 					}
 				}
@@ -259,6 +259,25 @@ func scanMetadata(lines []string) *metadata {
 	}
 	if meta.filamentMM[1] > 0 {
 		meta.toolsUsed[1] = true
+	}
+
+	// IDEX Copy/Mirror: both extruders are active even though the slicer only
+	// generates T0 commands (T1 is firmware-driven). Force T1 as used and copy
+	// T0's settings so the V1 header tells the HMI to heat and use both heads.
+	if meta.idexMode == "IDEX Duplication" || meta.idexMode == "IDEX Mirror" {
+		meta.toolsUsed[1] = true
+		if !meta.nozzleTempSet[1] {
+			meta.nozzleTemp[1] = meta.nozzleTemp[0]
+			meta.nozzleTempSet[1] = true
+		}
+		if meta.filamentType[1] == "PLA" && meta.filamentType[0] != "PLA" {
+			meta.filamentType[1] = meta.filamentType[0]
+		}
+		if meta.nozzleDiameter[1] == 0.4 && meta.nozzleDiameter[0] != 0.4 {
+			meta.nozzleDiameter[1] = meta.nozzleDiameter[0]
+		}
+		meta.retraction[1] = meta.retraction[0]
+		meta.switchRetraction[1] = meta.switchRetraction[0]
 	}
 
 	return meta

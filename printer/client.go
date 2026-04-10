@@ -720,11 +720,11 @@ func detectIDEXMode(processedGcode []byte) byte {
 		if strings.HasPrefix(line, ";Extruder Mode:") {
 			mode := strings.TrimPrefix(line, ";Extruder Mode:")
 			switch mode {
-			case "Duplication":
+			case "IDEX Duplication":
 				return sacp.IDEXModeDuplication
-			case "Mirror":
+			case "IDEX Mirror":
 				return sacp.IDEXModeMirror
-			case "Backup":
+			case "IDEX Backup":
 				return sacp.IDEXModeBackup
 			}
 			return sacp.IDEXModeDefault

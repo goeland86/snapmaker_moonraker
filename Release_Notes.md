@@ -1,5 +1,14 @@
 # Release Notes
 
+## v1.3.1 — 2026-04-13
+
+### Fix IDEX Profile Compatibility with Vendor Print Profiles
+
+- **Add vendor inheritance to Copy/Mirror printer profiles** — The IDEX printer profiles had no `inherits` line and an empty `printer_vendor`, which meant PrusaSlicer resolved their vendor pointer to `nullptr`. Due to PrusaSlicer's vendor space isolation (Gate 1 in the 3-gate compatibility check), all Snapmaker vendor print profiles were silently hidden — not just marked incompatible, but completely invisible. Adding `inherits = Snapmaker J1 (0.4 nozzle)` propagates the Snapmaker vendor pointer through the inheritance chain, making all vendor print profiles (with speeds up to 250mm/s and 10000mm/s² acceleration) available for Copy and Mirror modes.
+- **Update default print profile** — Changed `default_print_profile` from the IDEX wrapper to the vendor profile directly (`0.16 Optimal @Snapmaker J1 (0.4 nozzle)`).
+
+---
+
 ## v1.3.0 — 2026-04-10
 
 ### Fix IDEX Copy/Mirror Mode — Both Toolheads Now Print

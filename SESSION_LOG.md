@@ -1888,3 +1888,58 @@ M605 S2 in the GCode body did execute and set `dual_x_carriage_mode = DXC_DUPLIC
 ### Testing
 - Copy mode print: both toolheads printing ✅
 - NFC daemon: `SAVE_VARIABLE` silently accepted ✅
+
+---
+
+## Session - 2026-04-13: Fix IDEX Profile Compatibility with Vendor Print Profiles
+
+### Problem
+
+IDEX Copy/Mirror printer profiles were not showing vendor Snapmaker J1 print profiles
+(with speeds up to 250mm/s perimeter, 10000mm/s² acceleration). Instead, only a slow
+custom profile (`0.20 Standard @Snappy` — 60mm/s perimeters, zero acceleration) was
+available, resulting in prints running at ~20-30% of the J1's capability.
+
+### Root Cause
+
+PrusaSlicer's profile compatibility system uses a **3-gate check**:
+
+1. **Gate 1 — Vendor Space**: Compares the `VendorProfile*` pointer of the print preset
+   against the active printer's resolved vendor pointer. If different → immediately
+   rejected (completely hidden, even with "show incompatible" enabled).
+2. **Gate 2 — Condition Expression**: Evaluates `compatible_printers_condition` against
+   printer config (only if `compatible_printers` list is empty).
+3. **Gate 3 — Explicit Name List**: Exact string match of printer preset name against
+   `compatible_printers` list.
+
+The Copy/Mirror printer profiles had `printer_vendor =` (empty) and no `inherits` line,
+so `get_preset_with_vendor_profile()` resolved their vendor pointer to `nullptr`. The
+vendor Snapmaker J1 print profiles have a non-null Snapmaker vendor pointer. Gate 1
+(`non-null != nullptr`) rejected them immediately.
+
+### Fix
+
+Added `inherits = Snapmaker J1 (0.4 nozzle)` to both Copy/Mirror printer profiles.
+PrusaSlicer walks the inheritance chain to resolve the vendor pointer, placing the
+custom printers in the Snapmaker vendor space. Since both profiles already explicitly
+define every setting (bed_shape, start/end gcode, etc.), the inheritance changes no
+actual behavior — it only provides the vendor pointer.
+
+Also updated `default_print_profile` to point to the vendor profile directly
+(`0.16 Optimal @Snapmaker J1 (0.4 nozzle)`) instead of the IDEX wrapper.
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `PrusaSlicer_profile/Snapmaker J1 Copy (0.4 nozzle).ini` | Added `inherits = Snapmaker J1 (0.4 nozzle)`, updated `default_print_profile` |
+| `PrusaSlicer_profile/Snapmaker J1 Mirror (0.4 nozzle).ini` | Added `inherits = Snapmaker J1 (0.4 nozzle)`, updated `default_print_profile` |
+
+### Key Learnings
+
+- PrusaSlicer vendor space isolation is strict and silent — profiles from different
+  vendors are completely invisible, not just marked incompatible
+- User printer profiles that need vendor print profiles MUST inherit from a vendor
+  printer profile to acquire the vendor pointer
+- `compatible_printers_condition` expressions (e.g., `printer_model=="Snapmaker J1"`)
+  are never even evaluated if Gate 1 fails

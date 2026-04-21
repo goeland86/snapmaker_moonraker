@@ -1,5 +1,23 @@
 # Release Notes
 
+## v1.4.0 — 2026-04-20
+
+### Fix Mainsail Connection Stability
+
+Mainsail previously showed periodic "disconnected" states and rapid reconnect storms, with the bridge serving ~2 `printer.objects.query` requests per second instead of receiving the single `printer.objects.subscribe` that real Moonraker expects.
+
+- **Fix `printer.info` always returns `"ready"`** — The endpoint was returning `"printing"` when a print was active, but Mainsail treats any `klippy_state` other than `"ready"` as "Klipper is starting" and falls back to polling `printer.info` every 2 seconds without dispatching `printer/init → printer.objects.list → printer.objects.subscribe`. Actual print state is conveyed via the `print_stats` object, not `printer.info`. This single change drops `printer.objects.query` traffic by ~95%.
+- **Send proper WebSocket close frame** — The WebSocket handler was closing the TCP socket without sending a `CloseMessage` frame, so Mainsail saw close code 1005 (no status), flagged it as unclean, and triggered its 1-second reconnect loop. Now sends a normal closure frame before closing the socket.
+- **Add WebSocket ping/pong keepalive** — 30-second ping interval with 60-second pong timeout. Uses `WriteControl` without holding the client mutex so slow broadcasts can't starve pings.
+- **Preserve cached SACP data on brief disconnects** — `handleDisconnect()` no longer zeroes cached temperatures, fan speed, position, and print state. During short SACP reconnection cycles, Mainsail continues to see the last known values instead of everything dropping to zero.
+- **Log full WebSocket close reasons** — Previously filtered out "normal" closes; now logs every close reason for debugging.
+
+### Fix Spoolman Error Loop for Touchscreen Prints
+
+- **Attempt Spoolman tracking only once per print** — When a print started from the J1S touchscreen, the file isn't in the local gcode directory, so `StartSpoolmanTracking` failed every status poll (~every 5 seconds), spamming the logs. Tracking is now attempted once per print and skipped on failure until the next print transition.
+
+---
+
 ## v1.3.1 — 2026-04-13
 
 ### Fix IDEX Profile Compatibility with Vendor Print Profiles

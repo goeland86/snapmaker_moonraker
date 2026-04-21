@@ -187,8 +187,9 @@ func main() {
 
 	// Start state poller.
 	var prevPrinterState string
-	var printStateWritten bool  // track whether we've written the state file for this print
-	var printStateRestored bool // avoid retrying file reads every poll cycle
+	var printStateWritten bool    // track whether we've written the state file for this print
+	var printStateRestored bool   // avoid retrying file reads every poll cycle
+	var spoolmanTrackAttempted bool // avoid retrying Spoolman tracking every poll cycle
 	poller := printer.NewStatePoller(pc, state, cfg.Printer.PollInterval, func(s *printer.State) {
 		snap := s.Snapshot()
 		server.Hub().BroadcastStatusUpdate(s)
@@ -216,6 +217,7 @@ func main() {
 			clearPrintState(printStatePath)
 			printStateWritten = false
 			printStateRestored = false
+			spoolmanTrackAttempted = false
 		}
 
 		// Print state persistence: restore totalLines from state file after
@@ -266,7 +268,10 @@ func main() {
 				spoolmanMgr.StopTracking()
 			}
 			// Restore Spoolman tracking after restart if printing but not tracking.
-			if snap.PrinterState == "printing" && snap.PrintFileName != "" && !spoolmanMgr.IsTracking() {
+			// Only attempt once per print — touchscreen-started prints don't have
+			// a local file, so retrying every poll cycle just spams errors.
+			if snap.PrinterState == "printing" && snap.PrintFileName != "" && !spoolmanMgr.IsTracking() && !spoolmanTrackAttempted {
+				spoolmanTrackAttempted = true
 				server.StartSpoolmanTracking(snap.PrintFileName)
 			}
 		}

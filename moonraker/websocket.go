@@ -6,9 +6,15 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/john/snapmaker_moonraker/printer"
+)
+
+const (
+	wsPingInterval = 30 * time.Second
+	wsPongTimeout  = 60 * time.Second
 )
 
 var upgrader = websocket.Upgrader{
@@ -158,14 +164,50 @@ func (h *WSHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	conn.SetReadLimit(1 << 20) // 1 MB max message size
 
+	// Set up pong handler: extend the read deadline each time we get a pong.
+	conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+		return nil
+	})
+
 	client := &WSClient{
 		conn:       conn,
 		subscribed: make(map[string]interface{}),
 	}
 	h.register(client)
+
+	// Ping goroutine: sends pings at regular intervals to keep the connection alive.
+	// Uses WriteControl which is safe for concurrent use with other writers in
+	// gorilla/websocket, so we don't need client.mu here — acquiring it would
+	// let a slow BroadcastStatusUpdate starve pings and trigger a pong timeout.
+	done := make(chan struct{})
 	defer func() {
+		close(done)
+		// Send a proper WebSocket close frame before closing the TCP socket.
+		// Without this, the client sees close code 1005/1006 (abnormal) and
+		// triggers its reconnect loop.
+		_ = conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			time.Now().Add(time.Second),
+		)
 		h.unregister(client)
 		conn.Close()
+	}()
+	go func() {
+		ticker := time.NewTicker(wsPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+					return
+				}
+			case <-done:
+				return
+			}
+		}
 	}()
 
 	log.Printf("WebSocket client connected from %s", r.RemoteAddr)
@@ -173,9 +215,7 @@ func (h *WSHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
-				log.Printf("WebSocket read error: %v", err)
-			}
+			log.Printf("WebSocket client %s closed: %v", r.RemoteAddr, err)
 			break
 		}
 

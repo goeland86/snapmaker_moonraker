@@ -412,6 +412,9 @@ func (c *Client) handleSubscription(commandSet, commandID byte, data []byte) {
 }
 
 // handleDisconnect is called by the packet router when the connection breaks unexpectedly.
+// Cached subscription data (temperatures, fan, position, print state) is intentionally
+// preserved so that Mainsail continues to show the last known values during brief
+// SACP reconnection cycles instead of zeroing out and triggering a disconnect screen.
 func (c *Client) handleDisconnect() {
 	c.mu.Lock()
 	if c.conn != nil {
@@ -420,17 +423,6 @@ func (c *Client) handleDisconnect() {
 	c.conn = nil
 	c.router = nil
 	c.mu.Unlock()
-
-	c.subMu.Lock()
-	c.extruderData = nil
-	c.bedData = nil
-	c.fanData = nil
-	c.machineStatus = sacp.MachineStatusIdle
-	c.currentLine = 0
-	c.totalLines = 0
-	c.printTime = 0
-	c.printFilename = ""
-	c.subMu.Unlock()
 
 	log.Printf("Printer connection lost")
 }

@@ -33,19 +33,14 @@ func (s *Server) handlePrinterInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) printerInfo() map[string]interface{} {
-	// Always report as ready so Mainsail loads the dashboard.
-	// Actual printer state is reflected via printer objects (webhooks, print_stats).
-	state := "ready"
-	msg := ""
-
-	snap := s.state.Snapshot()
-	if snap.PrinterState == "printing" {
-		state = "printing"
-	}
-
+	// Klippy state is always "ready". Mainsail treats anything other than
+	// "ready" here as "klipper is starting/not ready" and refuses to
+	// dispatch printer/init → printer.objects.list → printer.objects.subscribe,
+	// falling back to a 2-second poll of printer.info instead. Actual print
+	// state is conveyed via the print_stats object, not here.
 	return map[string]interface{}{
-		"state":            state,
-		"state_message":    msg,
+		"state":            "ready",
+		"state_message":    "",
 		"hostname":         "snapmaker-moonraker",
 		"software_version": "v0.13.0-snapmaker_moonraker",
 		"cpu_info":         "Snapmaker Moonraker Bridge",

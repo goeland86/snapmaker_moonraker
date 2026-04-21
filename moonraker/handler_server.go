@@ -292,6 +292,7 @@ func (s *Server) getWebcamsList() map[string]interface{} {
 var allowedServices = []string{
 	"crowsnest",
 	"moonraker-obico",
+	"nfc-spoolman",
 	"printer",
 }
 

@@ -48,6 +48,7 @@ type Server struct {
 	spoolman      *spoolman.Manager
 	wsHub         *WSHub
 	tempStore     *TempStore
+	nfcState      *NFCState
 }
 
 // NewServer creates a new Moonraker server.
@@ -62,6 +63,7 @@ func NewServer(cfg Config, pc *printer.Client, st *printer.State, fm *files.Mana
 		history:       hist,
 		spoolman:      sm,
 		tempStore:     NewTempStore(1200),
+		nfcState:      NewNFCState(),
 	}
 
 	s.wsHub = NewWSHub(s)

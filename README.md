@@ -104,6 +104,18 @@ This produces a `snapmaker-moonraker-rpi3-YYYYMMDD.img.xz` file ready to flash t
 - snapmaker_moonraker as a systemd service on port 7125
 - SSH enabled, hostname `snapmaker`, default user `pi` / password `temppwd`
 
+### NFC spool selection
+
+The image ships with [klipper-nfc-daemon](https://github.com/goeland86/klipper-nfc-daemon) pre-installed as the `nfc-spoolman` systemd service. Plug a PN532-on-USB-UART reader into the Pi and it will auto-detect Spoolman NFC tags.
+
+The default config at `~/printer_data/config/nfc_spoolman.cfg` assumes Spoolman is running on `http://localhost:7912`. If your Spoolman server is on another host, edit the file via Mainsail's config editor (or SSH) and change `spoolman.url`, then restart the service:
+
+```bash
+sudo systemctl restart nfc-spoolman
+```
+
+On a tag scan, the bridge renders a tool-selection prompt in Mainsail (`NFC_ASSIGN_TOOL` / `NFC_CANCEL`) so you can pick which toolhead (T0/T1) the spool is mounted on.
+
 ## SACP Protocol
 
 The SACP implementation in the `sacp/` package is adapted from source code in the following projects:

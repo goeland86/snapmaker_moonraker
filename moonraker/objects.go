@@ -7,7 +7,12 @@ import (
 // PrinterObjects builds the Klipper-compatible printer object tree from state.
 // These objects mimic what Moonraker exposes from Klipper, enabling
 // Mainsail/Fluidd to render printer status.
-type PrinterObjects struct{}
+//
+// The optional server reference lets objects like save_variables read from
+// the persistent database; when nil, save_variables returns an empty map.
+type PrinterObjects struct {
+	server *Server
+}
 
 // BuildAll returns all printer objects for a full query.
 func (po *PrinterObjects) BuildAll(state printer.StateData) map[string]interface{} {
@@ -26,6 +31,7 @@ func (po *PrinterObjects) BuildAll(state printer.StateData) map[string]interface
 		"heaters":                        po.Heaters(state),
 		"display_status":                 po.DisplayStatus(state),
 		"gcode":                          po.GCode(state),
+		"save_variables":                 po.SaveVariables(),
 	}
 }
 
@@ -87,7 +93,22 @@ func (po *PrinterObjects) AvailableObjects() []string {
 		"heaters",
 		"display_status",
 		"gcode",
+		"save_variables",
 	}
+}
+
+// SaveVariables returns the persisted save_variables map in the Klipper
+// format ({variables: {...}}). Used by NFC_ASSIGN_TOOL to expose per-tool
+// spool metadata (material, vendor, temps, …) to macros and UI that query
+// printer.save_variables.variables.<name>.
+func (po *PrinterObjects) SaveVariables() map[string]interface{} {
+	vars := map[string]interface{}{}
+	if po.server != nil && po.server.database != nil {
+		if ns, ok := po.server.database.GetNamespace("save_variables"); ok {
+			vars = ns
+		}
+	}
+	return map[string]interface{}{"variables": vars}
 }
 
 func (po *PrinterObjects) Toolhead(state printer.StateData) map[string]interface{} {

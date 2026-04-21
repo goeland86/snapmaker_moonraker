@@ -1,5 +1,42 @@
 # Release Notes
 
+## v1.5.0 — 2026-04-21
+
+### Full klipper-nfc-daemon Integration
+
+The [klipper-nfc-daemon](https://github.com/goeland86/klipper-nfc-daemon) is now pre-installed on the Raspberry Pi image with full multi-tool support. Scan a TigerTag/OpenPrintTag on a connected NFC reader and Mainsail pops up a tool-selection dialog to assign the spool to T0 or T1.
+
+#### Image
+
+- **Daemon pre-installed** — `image/chroot-install.sh` clones the daemon, creates a Python venv at `/home/pi/nfc-spoolman-env`, installs `pyserial` and `requests`, deploys the script, installs the systemd unit (rewriting the upstream `debian` user to `pi`), and enables the `nfc-spoolman` service on boot.
+- **Seeded config** — `/home/pi/printer_data/config/nfc_spoolman.cfg` defaults to a PN532 reader on `/dev/ttyUSB0` in `multi_tool` mode with both extruders (T0/T1). Spoolman URL defaults to `http://localhost:7912`; see the README for how to change it via Mainsail's config panel.
+- **Service management** — `nfc-spoolman` appears alongside `crowsnest` and `moonraker-obico` in Mainsail's service panel for start/stop/restart control.
+
+#### Bridge — multi-tool prompt support
+
+The daemon's `multi_tool` mode uses Klipper-specific commands that the bridge now intercepts natively, since there is no Klipper runtime behind the Snapmaker:
+
+- **`SET_GCODE_VARIABLE MACRO=_NFC_STATE VARIABLE=<name> VALUE=<value>`** — pending spool fields are stored in an in-memory `NFCState`. Values wrapped as `'"..."'` (including names with spaces) are parsed correctly.
+- **`RESPOND TYPE=command MSG="action:..."`** — the message is broadcast as `// action:...` in a `notify_gcode_response` notification, exactly matching what Klipper's `[respond]` module emits. Mainsail's prompt parser picks up the `action:prompt_begin/text/button/show/end` sequence to render the dialog.
+- **`RESPOND MSG="..."`** — plain console-visible broadcasts.
+- **`NFC_ASSIGN_TOOL TOOL=<n>`** — reads pending state, calls `Spoolman.SetSpoolID(spoolID, tool)`, persists per-tool metadata, then closes the prompt.
+- **`NFC_CANCEL`** — dismisses the prompt and clears pending state without touching any spool.
+
+#### Multi-line GCode script support
+
+The bridge's `interceptGCode` was single-line only, which worked for the existing `SAVE_VARIABLE` silent-accept case but not for the daemon's multi-line prompt builder. It now splits on newlines and intercepts each line individually, gated by `isKlipperCommand()` so that mixed scripts still reach `ExecuteGCode` as a unit.
+
+#### `save_variables` printer object
+
+- **New Klipper-style `save_variables` object** — `printer.save_variables.variables` is queryable via HTTP and WebSocket, backed by the persistent database namespace so values survive restarts.
+- **Per-tool NFC metadata persisted** — on successful `NFC_ASSIGN_TOOL`, the bridge writes `nfc_t<n>_spool_id`, `nfc_t<n>_material`, `nfc_t<n>_vendor`, `nfc_t<n>_name`, `nfc_t<n>_color`, `nfc_t<n>_extruder_temp`, `nfc_t<n>_bed_temp` to the `save_variables` namespace. This mirrors what the Klipper-side `NFC_ASSIGN_TOOL` macro writes via `SAVE_VARIABLE` and exposes filament metadata to Mainsail, print-start macros, or any external tool that queries the printer objects.
+
+#### End-to-end verification
+
+Confirmed with a real TigerTag scan on the Pi: tag read → daemon matched spool in Spoolman → Mainsail prompt → T1 selected → spool 31 (AzureFilm PLA "Lumos GLOW IN THE DARK") assigned to tool 1, with all metadata persisted to `save_variables` and queryable via the Moonraker API.
+
+---
+
 ## v1.4.0 — 2026-04-20
 
 ### Fix Mainsail Connection Stability

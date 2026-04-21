@@ -101,7 +101,7 @@ func (h *WSHub) BroadcastStatusUpdate(state *printer.State) {
 		h.server.tempStore.Record(snap)
 	}
 
-	objects := &PrinterObjects{}
+	objects := &PrinterObjects{server: h.server}
 
 	for client := range h.clients {
 		if !client.isSubscribed || len(client.subscribed) == 0 {
@@ -256,7 +256,7 @@ func (h *WSHub) handleRPC(client *WSClient, req *jsonRPCRequest) {
 		resp.Result = h.server.printerInfo()
 
 	case "printer.objects.list":
-		objects := &PrinterObjects{}
+		objects := &PrinterObjects{server: h.server}
 		resp.Result = map[string]interface{}{
 			"objects": objects.AvailableObjects(),
 		}
@@ -425,7 +425,7 @@ func (h *WSHub) handleRPC(client *WSClient, req *jsonRPCRequest) {
 }
 
 func (h *WSHub) handleObjectsQuery(req *jsonRPCRequest) interface{} {
-	objects := &PrinterObjects{}
+	objects := &PrinterObjects{server: h.server}
 	snap := h.server.state.Snapshot()
 
 	requested := extractObjectsParam(req.Params)
@@ -438,7 +438,7 @@ func (h *WSHub) handleObjectsQuery(req *jsonRPCRequest) interface{} {
 }
 
 func (h *WSHub) handleObjectsSubscribe(client *WSClient, req *jsonRPCRequest) interface{} {
-	objects := &PrinterObjects{}
+	objects := &PrinterObjects{server: h.server}
 	snap := h.server.state.Snapshot()
 
 	requested := extractObjectsParam(req.Params)

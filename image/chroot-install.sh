@@ -49,6 +49,18 @@ python3 -m virtualenv --system-site-packages /home/pi/moonraker-obico-env
 /home/pi/moonraker-obico-env/bin/pip3 install -q -r /home/pi/moonraker-obico/requirements.txt
 chown -R 1000:1000 /home/pi/moonraker-obico /home/pi/moonraker-obico-env
 
+echo "==> [chroot] Installing klipper-nfc-daemon..."
+git clone --depth 1 https://github.com/goeland86/klipper-nfc-daemon.git /home/pi/klipper-nfc
+python3 -m virtualenv /home/pi/nfc-spoolman-env
+/home/pi/nfc-spoolman-env/bin/pip3 install -q pyserial requests
+cp /home/pi/klipper-nfc/nfc_spoolman.py /home/pi/nfc_spoolman.py
+cp -r /home/pi/klipper-nfc/readers /home/pi/readers
+# Install systemd unit, pointing at /home/pi instead of the upstream default /home/debian.
+sed 's|User=debian|User=pi|g; s|/home/debian|/home/pi|g' \
+    /home/pi/klipper-nfc/nfc-spoolman.service \
+    > /etc/systemd/system/nfc-spoolman.service
+chown -R 1000:1000 /home/pi/klipper-nfc /home/pi/nfc-spoolman-env /home/pi/nfc_spoolman.py /home/pi/readers
+
 echo "==> [chroot] Creating printer_data directories..."
 mkdir -p /home/pi/printer_data/{config,logs,systemd}
 
@@ -57,6 +69,7 @@ systemctl enable nginx
 systemctl enable snapmaker-moonraker
 systemctl enable crowsnest
 systemctl enable moonraker-obico
+systemctl enable nfc-spoolman
 
 echo "==> [chroot] Setting hostname..."
 echo "snapmaker" > /etc/hostname

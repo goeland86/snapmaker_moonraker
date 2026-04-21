@@ -52,7 +52,7 @@ func (s *Server) printerInfo() map[string]interface{} {
 }
 
 func (s *Server) handleObjectsList(w http.ResponseWriter, r *http.Request) {
-	objects := &PrinterObjects{}
+	objects := &PrinterObjects{server: s}
 	writeJSON(w, map[string]interface{}{
 		"result": map[string]interface{}{
 			"objects": objects.AvailableObjects(),
@@ -61,7 +61,7 @@ func (s *Server) handleObjectsList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleObjectsQuery(w http.ResponseWriter, r *http.Request) {
-	objects := &PrinterObjects{}
+	objects := &PrinterObjects{server: s}
 	snap := s.state.Snapshot()
 
 	// Parse requested objects from query params or body.
@@ -178,7 +178,57 @@ func (s *Server) handleGCodeScript(w http.ResponseWriter, r *http.Request) {
 // interceptGCode handles Klipper-specific commands that the Snapmaker doesn't
 // understand natively. Returns (handled, error). If handled is true, the caller
 // should not forward the command to ExecuteGCode.
+//
+// Multi-line scripts (e.g. from the klipper-nfc daemon's action:prompt builder)
+// are split and each line intercepted individually. If any line is not a known
+// Klipper-only command, the script is passed through untouched so mixed scripts
+// still reach ExecuteGCode as a unit.
 func (s *Server) interceptGCode(script string) (bool, error) {
+	if strings.ContainsAny(script, "\r\n") {
+		lines := strings.FieldsFunc(script, func(r rune) bool { return r == '\n' || r == '\r' })
+		// First pass: verify every non-empty line is a known Klipper command.
+		for _, line := range lines {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if !isKlipperCommand(line) {
+				return false, nil
+			}
+		}
+		// Second pass: execute each line's handler.
+		for _, line := range lines {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if _, err := s.interceptSingleGCode(line); err != nil {
+				return true, err
+			}
+		}
+		return true, nil
+	}
+	return s.interceptSingleGCode(script)
+}
+
+// isKlipperCommand returns true if the first word of the line matches a
+// Klipper-specific command that interceptSingleGCode knows how to handle.
+func isKlipperCommand(line string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(line))
+	fields := strings.Fields(upper)
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "ACTIVATE_EXTRUDER", "SET_HEATER_TEMPERATURE", "SET_GCODE_OFFSET",
+		"SAVE_VARIABLE", "SET_GCODE_VARIABLE", "RESPOND",
+		"NFC_ASSIGN_TOOL", "NFC_CANCEL",
+		"TURN_OFF_HEATERS", "SET_FAN_SPEED",
+		"M104", "M109", "M140", "M190", "M106", "M107":
+		return true
+	}
+	return false
+}
+
+func (s *Server) interceptSingleGCode(script string) (bool, error) {
 	upperScript := strings.ToUpper(strings.TrimSpace(script))
 	fields := strings.Fields(upperScript)
 	if len(fields) == 0 {
@@ -201,6 +251,21 @@ func (s *Server) interceptGCode(script string) (bool, error) {
 		// accept so the NFC spoolman daemon can run with klipper_variables=true
 		// without generating errors on the Snapmaker.
 		return true, nil
+	case "SET_GCODE_VARIABLE":
+		// Klipper macro variable setter. We handle MACRO=_NFC_STATE natively
+		// to store pending spool data from the NFC daemon. Other macros are
+		// silently accepted since there are no real macros on the Snapmaker.
+		return s.handleSetGCodeVariable(script)
+	case "RESPOND":
+		// Klipper's response module — used by the NFC daemon to emit
+		// action:prompt_* messages that Mainsail parses to render a prompt
+		// dialog. Broadcast the MSG as a notify_gcode_response so Mainsail
+		// receives it identically to a real Klipper setup.
+		return s.handleRespond(script)
+	case "NFC_ASSIGN_TOOL":
+		return s.handleNFCAssignTool(script)
+	case "NFC_CANCEL":
+		return s.handleNFCCancel()
 	case "TURN_OFF_HEATERS":
 		return s.handleTurnOffHeaters()
 	case "M104", "M109":

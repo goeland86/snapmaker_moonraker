@@ -3,6 +3,7 @@ package files
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -186,6 +187,50 @@ func (m *Manager) SaveFile(root, filename string, data []byte) error {
 	}
 
 	return os.WriteFile(path, data, 0644)
+}
+
+// SaveFromReader streams src to the file storage location and returns the
+// number of bytes written. Used for large uploads where loading the entire
+// content into memory would risk OOM (a 250 MB gcode upload was a common
+// trigger on the Pi).
+func (m *Manager) SaveFromReader(root, filename string, src io.Reader) (int64, error) {
+	path := filepath.Join(m.GetRootPath(root), filepath.FromSlash(filename))
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return 0, fmt.Errorf("creating directory: %w", err)
+	}
+
+	dst, err := os.Create(path)
+	if err != nil {
+		return 0, fmt.Errorf("creating file: %w", err)
+	}
+	closeOK := false
+	defer func() {
+		if !closeOK {
+			dst.Close()
+			os.Remove(path)
+		}
+	}()
+
+	bw := bufio.NewWriterSize(dst, 256*1024)
+	n, err := io.Copy(bw, src)
+	if err != nil {
+		return n, err
+	}
+	if err := bw.Flush(); err != nil {
+		return n, err
+	}
+	if err := dst.Close(); err != nil {
+		return n, err
+	}
+	closeOK = true
+	return n, nil
+}
+
+// FilePath returns the absolute filesystem path for a file in a root.
+// Used by the printer client to stream uploads without loading the file.
+func (m *Manager) FilePath(root, filename string) string {
+	return filepath.Join(m.GetRootPath(root), filepath.FromSlash(filename))
 }
 
 // ReadFile reads a file from storage.

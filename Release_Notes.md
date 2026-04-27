@@ -1,5 +1,40 @@
 # Release Notes
 
+## v1.6.0 — 2026-04-27
+
+### Memory Leak Fix — Streaming Upload Pipeline
+
+The bridge was being OOM-killed on the Pi (5 confirmed events over 10 days, anon-RSS ~750 MB on a 921 MB Pi) whenever a large GCode file moved through the Upload-and-Print path. The root cause was that the multipart upload, the file save, the GCode post-processor, and the SACP upload each held the entire file in memory at once — peak allocations reached ~1.0–1.5 GB for a 250 MB tile print, easily blowing past the Pi's RAM. This release rewrites the entire pipeline to stream end-to-end:
+
+- **`gcode.ProcessFile(srcPath, dstPath, model)`** replaces the old `Process(data []byte) []byte`. Two streaming passes over the source file via `bufio.Scanner` — pass 1 gathers metadata and the slicer thumbnail, pass 2 writes the V1/V0 header followed by the transformed body line-by-line. Memory is bounded to a few MB regardless of input size.
+- **`sacp.StartUpload(conn, filename, srcPath, timeout)`** now takes a file path. The MD5 is computed by streaming `io.Copy` into an `md5.New()` hasher; the chunk-request loop uses `ReadAt` to fetch only the requested 60 KB chunk. Memory cost is one chunk buffer plus hash state.
+- **`Client.Upload(filename, srcPath)`** processes the source gcode into a temp file alongside it (so we stay on the real filesystem rather than tmpfs) and hands the temp path to the SACP layer.
+- **`/server/files/upload`** uses a `MultipartReader` instead of `ParseMultipartForm`. The `file` part is streamed straight to disk via the new `Manager.SaveFromReader` helper, never materializing in RAM. The "Upload and Print" path now passes the saved file's path to `Client.Upload` instead of re-reading the file back into a `[]byte`.
+
+A 250 MB upload that used to peak around 1.0–1.5 GB now peaks at a few MB regardless of file size. The same goes for prints initiated from the file list (`printer.print.start`) and PrusaSlicer's "Send and Print".
+
+### Graceful Shutdown No Longer Logged as Failure
+
+Every `systemctl restart` was being recorded as `status=1/FAILURE` (7 of 12 historical "failures" turned out to be this — only the OOMs were real). The signal handler called `os.Exit(0)` which raced `log.Fatalf` in main; whichever ran first decided the exit code. The fix:
+
+- Remove `os.Exit(0)` from the signal handler so the main goroutine drives the exit.
+- Treat `http.ErrServerClosed` returned from `server.Start()` as a clean shutdown rather than fatal.
+
+### systemd Unit Improvements
+
+- **`SyslogIdentifier=snapmaker-moonraker`** so `journalctl -u snapmaker-moonraker` actually finds the bridge's logs (they were being tagged with the truncated process name and not associated with the unit).
+- **`Environment=GOMEMLIMIT=600MiB`** sets a soft memory ceiling for the Go runtime. The GC works harder as we approach the limit; combined with the streaming refactor it acts as a defence-in-depth cap on the Pi's 921 MB total RAM.
+
+### Internal API Changes
+
+- `gcode.Process(data []byte, model string) []byte` → `gcode.ProcessFile(srcPath, dstPath, model string) (uint32, error)`. Returns the total processed line count (header + body).
+- `sacp.StartUpload(conn, filename string, gcode []byte, timeout)` → `sacp.StartUpload(conn, filename, srcPath string, timeout)`.
+- `printer.Client.Upload(filename string, data []byte)` → `Upload(filename, srcPath string)`. Source file must be on disk; the bridge processes it to a sibling temp file.
+- `printer.Client.UploadFile` removed (had no callers).
+- `files.Manager.SaveFromReader(root, filename, src)` and `files.Manager.FilePath(root, filename)` added.
+
+---
+
 ## v1.5.0 — 2026-04-21
 
 ### Full klipper-nfc-daemon Integration

@@ -15,7 +15,7 @@ This application exposes a [Moonraker](https://moonraker.readthedocs.io/)-compat
 - Printer status monitoring (temperatures, position, print progress)
 - Temperature control (dual extruders + heated bed)
 - GCode execution
-- File management (upload, list, download, delete gcode files)
+- File management (upload, list, download, delete gcode files) — streamed end-to-end so memory use is independent of file size
 - Print control (start, pause, resume, cancel)
 - Emergency stop
 - Printer discovery via UDP broadcast
@@ -115,6 +115,29 @@ sudo systemctl restart nfc-spoolman
 ```
 
 On a tag scan, the bridge renders a tool-selection prompt in Mainsail (`NFC_ASSIGN_TOOL` / `NFC_CANCEL`) so you can pick which toolhead (T0/T1) the spool is mounted on.
+
+## Operational notes
+
+### Memory
+
+The upload pipeline (multipart → disk → gcode post-processor → SACP upload) streams end-to-end, so a print of any size processes in a few MB of RAM. Earlier releases buffered each stage in memory, which would OOM-kill the bridge on a Pi 3 (921 MB RAM) for prints over ~150 MB.
+
+The recommended systemd unit also sets `Environment=GOMEMLIMIT=600MiB` as a defence-in-depth cap on the Go runtime — the GC works harder as it approaches the limit. A typical unit looks like:
+
+```ini
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/printer_data
+ExecStart=/opt/snapmaker-moonraker/snapmaker_moonraker -config /home/pi/printer_data/config/snapmaker-moonraker.yaml
+Restart=on-failure
+RestartSec=10
+SyslogIdentifier=snapmaker-moonraker
+Environment=GOMEMLIMIT=600MiB
+```
+
+`SyslogIdentifier=snapmaker-moonraker` ensures `journalctl -u snapmaker-moonraker` finds the bridge's stdout/stderr; without it the journal still has the lines, but only matched via `_COMM=snapmaker_moonr`.
 
 ## SACP Protocol
 

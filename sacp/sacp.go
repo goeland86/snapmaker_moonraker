@@ -16,6 +16,7 @@ import (
 	"log"
 	"math"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
@@ -759,18 +760,44 @@ func StartScreenPrint(conn net.Conn, filename string, md5hex string, headType by
 
 // StartUpload uploads gcode data to the printer via the SACP file transfer protocol.
 // Returns the MD5 hex string of the uploaded data (needed for StartScreenPrint).
-func StartUpload(conn net.Conn, filename string, gcode []byte, timeout time.Duration) (string, error) {
-	packageCount := uint16((len(gcode) / DataLen) + 1)
-	md5hash := md5.Sum(gcode)
+// StartUpload streams the gcode at srcPath to the printer over SACP.
+// Memory usage is bounded to one chunk (DataLen, currently 60 KB) plus
+// hashing buffers, regardless of file size.
+func StartUpload(conn net.Conn, filename, srcPath string, timeout time.Duration) (string, error) {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return "", fmt.Errorf("opening gcode for upload: %w", err)
+	}
+	defer src.Close()
+
+	stat, err := src.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat gcode: %w", err)
+	}
+	size := stat.Size()
+	if size == 0 {
+		return "", fmt.Errorf("empty gcode file")
+	}
+
+	// Stream-hash the file. Memory cost: just the hash state and a 32 KB buffer.
+	hasher := md5.New()
+	if _, err := io.Copy(hasher, src); err != nil {
+		return "", fmt.Errorf("hashing gcode: %w", err)
+	}
+	var md5hash [16]byte
+	hasher.Sum(md5hash[:0])
+	md5hex := hex.EncodeToString(md5hash[:])
+
+	packageCount := uint16((size / int64(DataLen)) + 1)
 
 	data := bytes.Buffer{}
 	writeString(&data, filename)
-	writeLE(&data, uint32(len(gcode)))
+	writeLE(&data, uint32(size))
 	writeLE(&data, packageCount)
-	writeString(&data, hex.EncodeToString(md5hash[:]))
+	writeString(&data, md5hex)
 
 	conn.SetWriteDeadline(time.Now().Add(timeout))
-	_, err := conn.Write(Packet{
+	if _, err := conn.Write(Packet{
 		ReceiverID: 2,
 		SenderID:   0,
 		Attribute:  0,
@@ -778,13 +805,11 @@ func StartUpload(conn net.Conn, filename string, gcode []byte, timeout time.Dura
 		CommandSet: 0xb0,
 		CommandID:  0x00,
 		Data:       data.Bytes(),
-	}.Encode())
-
-	if err != nil {
+	}.Encode()); err != nil {
 		return "", err
 	}
 
-	md5hex := hex.EncodeToString(md5hash[:])
+	chunkBuf := make([]byte, DataLen)
 
 	for {
 		conn.SetReadDeadline(time.Now().Add(timeout))
@@ -811,35 +836,36 @@ func StartUpload(conn net.Conn, filename string, gcode []byte, timeout time.Dura
 			}
 
 			pkgRequested := binary.LittleEndian.Uint16(p.Data[2+md5Len : 2+md5Len+2])
-			var pkgData []byte
-
-			if pkgRequested == packageCount-1 {
-				pkgData = gcode[DataLen*int(pkgRequested):]
-			} else {
-				pkgData = gcode[DataLen*int(pkgRequested) : DataLen*int(pkgRequested+1)]
+			offset := int64(pkgRequested) * int64(DataLen)
+			pkgSize := DataLen
+			if remaining := size - offset; remaining < int64(DataLen) {
+				pkgSize = int(remaining)
 			}
 
-			chunkBuf := bytes.Buffer{}
-			chunkBuf.WriteByte(0)
-			writeString(&chunkBuf, hex.EncodeToString(md5hash[:]))
-			writeLE(&chunkBuf, pkgRequested)
-			writeBytes(&chunkBuf, pkgData)
+			pkgData := chunkBuf[:pkgSize]
+			if _, err := src.ReadAt(pkgData, offset); err != nil && err != io.EOF {
+				return "", fmt.Errorf("reading chunk %d: %w", pkgRequested, err)
+			}
+
+			respBuf := bytes.Buffer{}
+			respBuf.WriteByte(0)
+			writeString(&respBuf, md5hex)
+			writeLE(&respBuf, pkgRequested)
+			writeBytes(&respBuf, pkgData)
 
 			perc := float64(pkgRequested+1) / float64(packageCount) * 100.0
 			log.Printf("  SACP upload: %.1f%%", perc)
 
 			conn.SetWriteDeadline(time.Now().Add(timeout))
-			_, err := conn.Write(Packet{
+			if _, err := conn.Write(Packet{
 				ReceiverID: 2,
 				SenderID:   0,
 				Attribute:  1,
 				Sequence:   p.Sequence,
 				CommandSet: 0xb0,
 				CommandID:  0x01,
-				Data:       chunkBuf.Bytes(),
-			}.Encode())
-
-			if err != nil {
+				Data:       respBuf.Bytes(),
+			}.Encode()); err != nil {
 				return "", err
 			}
 

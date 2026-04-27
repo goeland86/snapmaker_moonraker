@@ -4,11 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"log"
 	"net"
+	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -596,10 +595,13 @@ func (c *Client) SetBedTemperature(toolID int, temp int) error {
 	return c.sendCommand(0x14, 0x02, data.Bytes())
 }
 
-// Upload uploads gcode data to the printer and starts printing.
+// Upload streams the gcode at srcPath to the printer and starts printing.
 // Follows the sm2uploader pattern: upload → disconnect → disconnect → close → reconnect.
 // The double disconnect signals the HMI to finalize and index the uploaded file.
-func (c *Client) Upload(filename string, data []byte) error {
+//
+// Memory usage is bounded — the file is processed and uploaded streaming,
+// independent of file size.
+func (c *Client) Upload(filename, srcPath string) error {
 	c.mu.Lock()
 	conn := c.conn
 	router := c.router
@@ -624,12 +626,22 @@ func (c *Client) Upload(filename string, data []byte) error {
 		router.Stop()
 	}
 
-	data = gcode.Process(data, c.model)
+	// Process the source gcode into a temp file alongside it. Keeping the temp
+	// next to the source guarantees we stay on the real filesystem rather than
+	// a possibly-tmpfs /tmp, which would defeat the whole point of streaming.
+	tmpFile, err := os.CreateTemp(filepath.Dir(srcPath), ".processed-*.gcode")
+	if err != nil {
+		return fmt.Errorf("creating processed temp: %w", err)
+	}
+	processedPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(processedPath)
 
-	// Count lines in the processed GCode so we can calculate progress.
-	// The screen MCU query (0xAC/0x1A) always times out on J1S, so we
-	// compute totalLines ourselves from the file we're about to upload.
-	lineCount := uint32(bytes.Count(data, []byte{'\n'}))
+	lineCount, err := gcode.ProcessFile(srcPath, processedPath, c.model)
+	if err != nil {
+		return fmt.Errorf("processing gcode: %w", err)
+	}
+
 	c.subMu.Lock()
 	c.totalLines = lineCount
 	c.subMu.Unlock()
@@ -639,7 +651,7 @@ func (c *Client) Upload(filename string, data []byte) error {
 	// and paths with subdirectories confuse the HMI file index.
 	uploadName := filepath.Base(filename)
 
-	md5hex, err := sacp.StartUpload(conn, uploadName, data, sacpTimeout)
+	md5hex, err := sacp.StartUpload(conn, uploadName, processedPath, sacpTimeout)
 	if err != nil {
 		// Upload failed — close and schedule reconnect.
 		conn.Close()
@@ -677,11 +689,11 @@ func (c *Client) Upload(filename string, data []byte) error {
 	// Set IDEX mode via SACP if the gcode requests Duplication or Mirror mode.
 	// The V1 header tells the HMI, but sending the SACP command as well ensures
 	// the controller is in the correct mode before the print starts.
-	if idexMode := detectIDEXMode(data); idexMode != sacp.IDEXModeDefault {
+	if idexMode := idexModeFromHeader(processedPath); idexMode != sacp.IDEXModeDefault {
 		modeNames := map[byte]string{
 			sacp.IDEXModeDuplication: "Duplication",
-			sacp.IDEXModeMirror:     "Mirror",
-			sacp.IDEXModeBackup:     "Backup",
+			sacp.IDEXModeMirror:      "Mirror",
+			sacp.IDEXModeBackup:       "Backup",
 		}
 		log.Printf("Setting IDEX mode: %s (0x%02x)", modeNames[idexMode], idexMode)
 		if err := c.sendCommand(0xAC, 0x0A, []byte{idexMode}); err != nil {
@@ -696,31 +708,16 @@ func (c *Client) Upload(filename string, data []byte) error {
 	return nil
 }
 
-// detectIDEXMode scans the processed gcode V1 header for the ";Extruder Mode:" line
-// and returns the corresponding SACP IDEX mode byte.
-func detectIDEXMode(processedGcode []byte) byte {
-	// Only need to scan the header (first ~30 lines).
-	header := string(processedGcode)
-	if idx := strings.Index(header, ";Header End"); idx >= 0 {
-		header = header[:idx]
-	} else if len(header) > 2048 {
-		header = header[:2048]
-	}
-
-	for _, line := range strings.Split(header, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, ";Extruder Mode:") {
-			mode := strings.TrimPrefix(line, ";Extruder Mode:")
-			switch mode {
-			case "IDEX Duplication":
-				return sacp.IDEXModeDuplication
-			case "IDEX Mirror":
-				return sacp.IDEXModeMirror
-			case "IDEX Backup":
-				return sacp.IDEXModeBackup
-			}
-			return sacp.IDEXModeDefault
-		}
+// idexModeFromHeader maps the V1 header's ";Extruder Mode:" string at the top
+// of a processed gcode file to a SACP mode byte.
+func idexModeFromHeader(processedPath string) byte {
+	switch gcode.DetectIDEXModeFromHeader(processedPath) {
+	case gcode.IDEXModeDuplication:
+		return sacp.IDEXModeDuplication
+	case gcode.IDEXModeMirror:
+		return sacp.IDEXModeMirror
+	case gcode.IDEXModeBackup:
+		return sacp.IDEXModeBackup
 	}
 	return sacp.IDEXModeDefault
 }
@@ -749,15 +746,6 @@ func (c *Client) reconnectAfterUpload() {
 	if err := c.Connect(); err != nil {
 		log.Printf("Background reconnect after upload failed: %v", err)
 	}
-}
-
-// UploadFile uploads a file from a reader.
-func (c *Client) UploadFile(filename string, r io.Reader, size int64) error {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return fmt.Errorf("reading file data: %w", err)
-	}
-	return c.Upload(filename, data)
 }
 
 // ExecuteGCode sends a GCode command via SACP.

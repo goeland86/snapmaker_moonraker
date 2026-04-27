@@ -11,6 +11,8 @@ WorkingDirectory=/home/pi/printer_data
 ExecStart=/opt/snapmaker-moonraker/snapmaker_moonraker -config /home/pi/printer_data/config/snapmaker-moonraker.yaml
 Restart=on-failure
 RestartSec=10
+SyslogIdentifier=snapmaker-moonraker
+Environment=GOMEMLIMIT=600MiB
 
 [Install]
 WantedBy=multi-user.target

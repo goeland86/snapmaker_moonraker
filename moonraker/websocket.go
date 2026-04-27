@@ -520,13 +520,13 @@ func (h *WSHub) handlePrintStart(req *jsonRPCRequest) interface{} {
 		return map[string]interface{}{}
 	}
 
-	data, err := h.server.fileManager.ReadFile("gcodes", filename)
-	if err != nil {
+	if _, err := h.server.fileManager.StatFile("gcodes", filename); err != nil {
 		log.Printf("Error reading file for print: %v", err)
 		return map[string]interface{}{}
 	}
 
-	if err := h.server.printerClient.Upload(filename, data); err != nil {
+	srcPath := h.server.fileManager.FilePath("gcodes", filename)
+	if err := h.server.printerClient.Upload(filename, srcPath); err != nil {
 		log.Printf("Error uploading to printer: %v", err)
 		return map[string]interface{}{}
 	}

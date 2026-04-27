@@ -1,9 +1,12 @@
 package gcode
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"log"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -19,7 +22,7 @@ type metadata struct {
 	maxX, maxY       float64
 	maxZ             float64
 	hasCoords        bool
-	filamentMM       [2]float64  // per-tool filament extruded in mm
+	filamentMM       [2]float64 // per-tool filament extruded in mm
 	layerHeight      float64
 	estimatedTime    float64 // seconds
 	toolsUsed        [2]bool
@@ -28,66 +31,219 @@ type metadata struct {
 	retraction       [2]float64
 	switchRetraction [2]float64
 	maxToolNum       int
-	lastToolLine     [2]int // last line index where each (remapped) tool is active
+	lastToolLine     [2]int // last source line index where each (remapped) tool is active
 	thumbnail        string // data URI (data:image/png;base64,...) extracted from slicer thumbnails
 	idexMode         string // IDEX mode detected from M605: "Default", "Duplication", "Mirror"
 }
 
-// Process takes raw gcode data and a printer model string, and returns
-// transformed gcode with a Snapmaker-compatible metadata header prepended
-// and tool numbers remapped for dual-extruder compatibility.
+// toolChangeEvent records a tool change at a specific source line so the
+// shutoff-insertion count can be computed after lastToolLine is finalized.
+type toolChangeEvent struct {
+	lineIdx int
+	prev    int
+	new     int
+}
+
+// scanBufMax bounds the size of any single gcode line. Default bufio.Scanner
+// caps at 64 KB which is normally fine, but we raise it for slicers that
+// occasionally emit very long inline comments.
+const scanBufMax = 1 << 20 // 1 MB
+
+// ProcessFile reads gcode from srcPath, writes a Snapmaker-compatible processed
+// version to dstPath, and returns the total number of lines in the output
+// (header + body). It runs in two streaming passes over the source file with
+// a memory footprint independent of file size — typically a few MB regardless
+// of how large the input gcode is.
 //
-// If the data already contains a ";Header Start" marker, it is returned
-// unchanged (idempotency).
-func Process(data []byte, printerModel string) []byte {
-	content := string(data)
+// If the source already contains a ";Header Start" marker near the top, it is
+// copied through unchanged for idempotency.
+func ProcessFile(srcPath, dstPath, printerModel string) (uint32, error) {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return 0, fmt.Errorf("opening source gcode: %w", err)
+	}
+	defer src.Close()
 
-	// Idempotency: skip if already processed.
-	if strings.Contains(content, ";Header Start") {
+	alreadyProcessed, err := peekAlreadyProcessed(src)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return 0, err
+	}
+	if alreadyProcessed {
 		log.Printf("gcode: header already present, skipping processing")
-		return data
+		return copyThrough(src, dstPath)
 	}
 
-	// Normalize line endings.
-	content = strings.ReplaceAll(content, "\r\n", "\n")
-	content = strings.ReplaceAll(content, "\r", "\n")
-
-	// Extract thumbnail before line splitting (needs raw multi-line blocks).
-	thumbnail := extractThumbnail(content)
-
-	lines := strings.Split(content, "\n")
-
-	// Pass 1: scan for metadata.
-	meta := scanMetadata(lines)
-	meta.thumbnail = thumbnail
-
-	if thumbnail != "" {
-		log.Printf("gcode: extracted thumbnail (%d bytes)", len(thumbnail))
+	// Pass 1: scan metadata, extract thumbnail, count source lines, record tool
+	// changes for the shutoff line-count calculation.
+	meta, srcLines, toolChanges, err := scanFile(src)
+	if err != nil {
+		return 0, fmt.Errorf("scanning gcode: %w", err)
 	}
+	finalizeMetadata(meta)
+
+	bodyLines := srcLines + countShutoffs(toolChanges, meta)
 
 	idexLabel := "Default"
 	if meta.idexMode != "" {
 		idexLabel = meta.idexMode
 	}
 	log.Printf("gcode: scanned %d lines — tools=%v maxTool=T%d temps=[%.0f,%.0f] bed=%.0f filament=[%.1f,%.1f]mm est=%.0fs idex=%s",
-		len(lines), meta.toolsUsed, meta.maxToolNum,
+		srcLines, meta.toolsUsed, meta.maxToolNum,
 		meta.nozzleTemp[0], meta.nozzleTemp[1], meta.bedTemp,
 		meta.filamentMM[0], meta.filamentMM[1], meta.estimatedTime, idexLabel)
+	if meta.thumbnail != "" {
+		log.Printf("gcode: extracted thumbnail (%d bytes)", len(meta.thumbnail))
+	}
 
-	// Pass 2: transform lines (tool remap + nozzle shutoff).
-	transformed := transformLines(lines, meta)
+	// Pass 2: write header, then stream-transform the body into the output.
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return 0, err
+	}
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return 0, fmt.Errorf("creating dest gcode: %w", err)
+	}
+	closeOK := false
+	defer func() {
+		if !closeOK {
+			dst.Close()
+			os.Remove(dstPath)
+		}
+	}()
 
-	// Build and prepend header.
-	header := buildHeader(meta, printerModel, len(transformed))
+	bw := bufio.NewWriterSize(dst, 256*1024)
 
-	log.Printf("gcode: %s header prepended (%d bytes), output %d lines",
-		headerVersion(printerModel), len(header), len(transformed))
+	header := buildHeader(meta, printerModel, bodyLines)
+	if _, err := bw.WriteString(header); err != nil {
+		return 0, err
+	}
+	headerLines := strings.Count(header, "\n")
 
-	return []byte(header + strings.Join(transformed, "\n"))
+	if err := transformFile(src, bw, meta); err != nil {
+		return 0, fmt.Errorf("transforming gcode: %w", err)
+	}
+
+	if err := bw.Flush(); err != nil {
+		return 0, err
+	}
+	if err := dst.Close(); err != nil {
+		return 0, err
+	}
+	closeOK = true
+
+	log.Printf("gcode: %s header prepended (%d bytes), output %d body lines",
+		headerVersion(printerModel), len(header), bodyLines)
+
+	return uint32(headerLines + bodyLines), nil
 }
 
-// scanMetadata makes a single pass over all gcode lines to extract metadata.
-func scanMetadata(lines []string) *metadata {
+// peekAlreadyProcessed reads the first 64 lines of src looking for the
+// ";Header Start" marker that ProcessFile writes. The reader is left positioned
+// after the peek; callers must Seek(0) before re-reading.
+func peekAlreadyProcessed(src io.Reader) (bool, error) {
+	scanner := bufio.NewScanner(src)
+	scanner.Buffer(make([]byte, 64*1024), scanBufMax)
+	for i := 0; i < 64 && scanner.Scan(); i++ {
+		if strings.HasPrefix(scanner.Text(), ";Header Start") {
+			return true, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// copyThrough streams src to dstPath and returns the number of newlines copied.
+func copyThrough(src io.Reader, dstPath string) (uint32, error) {
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return 0, err
+	}
+	defer dst.Close()
+
+	bw := bufio.NewWriterSize(dst, 256*1024)
+	cw := &lineCountingWriter{w: bw}
+	if _, err := io.Copy(cw, src); err != nil {
+		return 0, err
+	}
+	if err := bw.Flush(); err != nil {
+		return 0, err
+	}
+	return cw.lines, nil
+}
+
+type lineCountingWriter struct {
+	w     io.Writer
+	lines uint32
+}
+
+func (c *lineCountingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	for i := 0; i < n; i++ {
+		if p[i] == '\n' {
+			c.lines++
+		}
+	}
+	return n, err
+}
+
+// countShutoffs returns the number of nozzle-shutoff lines that will be inserted
+// during pass 2, given the finalized lastToolLine values from pass 1.
+func countShutoffs(events []toolChangeEvent, meta *metadata) int {
+	count := 0
+	for _, tc := range events {
+		prevR := tc.prev % 2
+		newR := tc.new % 2
+		if prevR != newR && meta.lastToolLine[prevR] >= 0 && meta.lastToolLine[prevR] <= tc.lineIdx {
+			count++
+		}
+	}
+	return count
+}
+
+// finalizeMetadata applies the post-scan defaults, tool usage inference from
+// filament extrusion, and IDEX Copy/Mirror compensation that buildHeader needs.
+func finalizeMetadata(meta *metadata) {
+	if !meta.hasCoords {
+		meta.minX, meta.minY, meta.minZ = 0, 0, 0
+		meta.maxX, meta.maxY, meta.maxZ = 0, 0, 0
+	}
+
+	if meta.filamentMM[0] > 0 {
+		meta.toolsUsed[0] = true
+	}
+	if meta.filamentMM[1] > 0 {
+		meta.toolsUsed[1] = true
+	}
+
+	// IDEX Copy/Mirror: both extruders are active even though the slicer only
+	// generates T0 commands (T1 is firmware-driven). Force T1 as used and copy
+	// T0's settings so the V1 header tells the HMI to heat and use both heads.
+	if meta.idexMode == "IDEX Duplication" || meta.idexMode == "IDEX Mirror" {
+		meta.toolsUsed[1] = true
+		if !meta.nozzleTempSet[1] {
+			meta.nozzleTemp[1] = meta.nozzleTemp[0]
+			meta.nozzleTempSet[1] = true
+		}
+		if meta.filamentType[1] == "PLA" && meta.filamentType[0] != "PLA" {
+			meta.filamentType[1] = meta.filamentType[0]
+		}
+		if meta.nozzleDiameter[1] == 0.4 && meta.nozzleDiameter[0] != 0.4 {
+			meta.nozzleDiameter[1] = meta.nozzleDiameter[0]
+		}
+		meta.retraction[1] = meta.retraction[0]
+		meta.switchRetraction[1] = meta.switchRetraction[0]
+	}
+}
+
+// scanFile is pass 1: streams over src line-by-line, gathering metadata,
+// extracting the slicer thumbnail (if any), counting source lines, and
+// recording tool change events.
+func scanFile(src io.Reader) (*metadata, int, []toolChangeEvent, error) {
 	meta := &metadata{
 		minX:             math.MaxFloat64,
 		minY:             math.MaxFloat64,
@@ -104,12 +260,51 @@ func scanMetadata(lines []string) *metadata {
 
 	currentTool := 0
 	relative := false
-	var lastAbsE [2]float64 // per-tool absolute E position
+	var lastAbsE [2]float64
 	var prevZ float64
 	zMoves := 0
 
-	for i, line := range lines {
+	var toolChanges []toolChangeEvent
+
+	// Thumbnail extraction state: we keep the last completed thumbnail block,
+	// matching the original behaviour (slicers emit small + large variants;
+	// the largest is typically last).
+	inThumbnail := false
+	var curThumb strings.Builder
+	var lastThumb string
+
+	scanner := bufio.NewScanner(src)
+	scanner.Buffer(make([]byte, 64*1024), scanBufMax)
+
+	i := 0
+	for ; scanner.Scan(); i++ {
+		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
+
+		// Thumbnail block tracking — must run before normal comment handling
+		// so the base64 payload lines are not mistaken for metadata.
+		if !inThumbnail {
+			if strings.HasPrefix(trimmed, "; thumbnail begin") {
+				inThumbnail = true
+				curThumb.Reset()
+				continue
+			}
+		} else {
+			if strings.HasPrefix(trimmed, "; thumbnail end") {
+				inThumbnail = false
+				lastThumb = curThumb.String()
+				curThumb.Reset()
+				continue
+			}
+			// Inside the block: strip "; " / ";" prefix and append base64.
+			payload := strings.TrimPrefix(trimmed, "; ")
+			payload = strings.TrimPrefix(payload, ";")
+			payload = strings.TrimSpace(payload)
+			if payload != "" {
+				curThumb.WriteString(payload)
+			}
+			continue
+		}
 
 		// Pure comment line.
 		if strings.HasPrefix(trimmed, ";") {
@@ -132,6 +327,7 @@ func scanMetadata(lines []string) *metadata {
 		// Tool change (T0, T1, T2, ...).
 		if len(upper) >= 2 && upper[0] == 'T' {
 			if n, err := strconv.Atoi(upper[1:]); err == nil {
+				toolChanges = append(toolChanges, toolChangeEvent{lineIdx: i, prev: currentTool, new: n})
 				currentTool = n
 				if n > meta.maxToolNum {
 					meta.maxToolNum = n
@@ -224,7 +420,6 @@ func scanMetadata(lines []string) *metadata {
 					if val > meta.maxZ {
 						meta.maxZ = val
 					}
-					// Derive layer height from first Z delta (fallback).
 					if meta.layerHeight == 0 && zMoves > 0 && val > prevZ {
 						meta.layerHeight = val - prevZ
 					}
@@ -247,40 +442,109 @@ func scanMetadata(lines []string) *metadata {
 		}
 	}
 
-	// Defaults for missing coordinate data.
-	if !meta.hasCoords {
-		meta.minX, meta.minY, meta.minZ = 0, 0, 0
-		meta.maxX, meta.maxY, meta.maxZ = 0, 0, 0
+	if err := scanner.Err(); err != nil {
+		return nil, 0, nil, err
 	}
 
-	// Mark tools as used based on filament extrusion (covers implicit T0).
-	if meta.filamentMM[0] > 0 {
-		meta.toolsUsed[0] = true
-	}
-	if meta.filamentMM[1] > 0 {
-		meta.toolsUsed[1] = true
+	if lastThumb != "" {
+		meta.thumbnail = "data:image/png;base64," + lastThumb
 	}
 
-	// IDEX Copy/Mirror: both extruders are active even though the slicer only
-	// generates T0 commands (T1 is firmware-driven). Force T1 as used and copy
-	// T0's settings so the V1 header tells the HMI to heat and use both heads.
-	if meta.idexMode == "IDEX Duplication" || meta.idexMode == "IDEX Mirror" {
-		meta.toolsUsed[1] = true
-		if !meta.nozzleTempSet[1] {
-			meta.nozzleTemp[1] = meta.nozzleTemp[0]
-			meta.nozzleTempSet[1] = true
+	return meta, i, toolChanges, nil
+}
+
+// transformFile is pass 2: streams src → out applying tool remap and inserting
+// nozzle shutoffs at the same source line indices as the legacy implementation.
+func transformFile(src io.Reader, out *bufio.Writer, meta *metadata) error {
+	needRemap := meta.maxToolNum > 1
+	currentTool := 0
+
+	scanner := bufio.NewScanner(src)
+	scanner.Buffer(make([]byte, 64*1024), scanBufMax)
+
+	writeLine := func(s string) error {
+		if _, err := out.WriteString(s); err != nil {
+			return err
 		}
-		if meta.filamentType[1] == "PLA" && meta.filamentType[0] != "PLA" {
-			meta.filamentType[1] = meta.filamentType[0]
-		}
-		if meta.nozzleDiameter[1] == 0.4 && meta.nozzleDiameter[0] != 0.4 {
-			meta.nozzleDiameter[1] = meta.nozzleDiameter[0]
-		}
-		meta.retraction[1] = meta.retraction[0]
-		meta.switchRetraction[1] = meta.switchRetraction[0]
+		return out.WriteByte('\n')
 	}
 
-	return meta
+	i := 0
+	for ; scanner.Scan(); i++ {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+
+		codePart := trimmed
+		commentPart := ""
+		if idx := strings.IndexByte(trimmed, ';'); idx >= 0 {
+			commentPart = trimmed[idx:]
+			codePart = strings.TrimSpace(trimmed[:idx])
+		}
+
+		if codePart == "" {
+			if err := writeLine(line); err != nil {
+				return err
+			}
+			continue
+		}
+
+		upper := strings.ToUpper(codePart)
+
+		// Tool change.
+		if len(upper) >= 2 && upper[0] == 'T' {
+			if n, err := strconv.Atoi(upper[1:]); err == nil {
+				prevTool := currentTool % 2
+				currentTool = n
+				newTool := n % 2
+
+				if needRemap && n > 1 {
+					out := fmt.Sprintf("T%d", newTool)
+					if commentPart != "" {
+						out += " " + commentPart
+					}
+					if err := writeLine(out); err != nil {
+						return err
+					}
+				} else {
+					if err := writeLine(line); err != nil {
+						return err
+					}
+				}
+
+				// Unused nozzle shutoff: if the previous tool won't be used
+				// again after this point, turn off its heater.
+				if prevTool != newTool && meta.lastToolLine[prevTool] >= 0 && meta.lastToolLine[prevTool] <= i {
+					if err := writeLine(fmt.Sprintf("M104 S0 T%d ; shutoff unused nozzle", prevTool)); err != nil {
+						return err
+					}
+				}
+
+				continue
+			}
+		}
+
+		// Remap T param on M104/M109.
+		if needRemap && (strings.HasPrefix(upper, "M104 ") || strings.HasPrefix(upper, "M109 ")) {
+			if err := writeLine(remapParam(line, codePart, commentPart, 'T')); err != nil {
+				return err
+			}
+			continue
+		}
+
+		// Remap P param on M106/M107.
+		if needRemap && (strings.HasPrefix(upper, "M106 ") || strings.HasPrefix(upper, "M107 ")) {
+			if err := writeLine(remapParam(line, codePart, commentPart, 'P')); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := writeLine(line); err != nil {
+			return err
+		}
+	}
+
+	return scanner.Err()
 }
 
 // isG0G1 returns true if the uppercased line is a G0 or G1 move command.
@@ -404,77 +668,6 @@ func scanTempCommand(line string, currentTool int, meta *metadata, isBed bool) {
 			meta.maxToolNum = tVal
 		}
 	}
-}
-
-// transformLines processes gcode lines to remap tool numbers and insert
-// nozzle shutoff commands for unused extruders.
-func transformLines(lines []string, meta *metadata) []string {
-	needRemap := meta.maxToolNum > 1
-	result := make([]string, 0, len(lines)+10)
-	currentTool := 0
-
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		// Split code and inline comment.
-		codePart := trimmed
-		commentPart := ""
-		if idx := strings.IndexByte(trimmed, ';'); idx >= 0 {
-			commentPart = trimmed[idx:]
-			codePart = strings.TrimSpace(trimmed[:idx])
-		}
-
-		if codePart == "" {
-			result = append(result, line)
-			continue
-		}
-
-		upper := strings.ToUpper(codePart)
-
-		// Tool change.
-		if len(upper) >= 2 && upper[0] == 'T' {
-			if n, err := strconv.Atoi(upper[1:]); err == nil {
-				prevTool := currentTool % 2
-				currentTool = n
-				newTool := n % 2
-
-				// Remap tool number if needed.
-				if needRemap && n > 1 {
-					out := fmt.Sprintf("T%d", newTool)
-					if commentPart != "" {
-						out += " " + commentPart
-					}
-					result = append(result, out)
-				} else {
-					result = append(result, line)
-				}
-
-				// Unused nozzle shutoff: if the previous tool won't be used
-				// again after this point, turn off its heater.
-				if prevTool != newTool && meta.lastToolLine[prevTool] >= 0 && meta.lastToolLine[prevTool] <= i {
-					result = append(result, fmt.Sprintf("M104 S0 T%d ; shutoff unused nozzle", prevTool))
-				}
-
-				continue
-			}
-		}
-
-		// Remap T param on M104/M109.
-		if needRemap && (strings.HasPrefix(upper, "M104 ") || strings.HasPrefix(upper, "M109 ")) {
-			result = append(result, remapParam(line, codePart, commentPart, 'T'))
-			continue
-		}
-
-		// Remap P param on M106/M107.
-		if needRemap && (strings.HasPrefix(upper, "M106 ") || strings.HasPrefix(upper, "M107 ")) {
-			result = append(result, remapParam(line, codePart, commentPart, 'P'))
-			continue
-		}
-
-		result = append(result, line)
-	}
-
-	return result
 }
 
 // remapParam rewrites a parameter (T or P) with values > 1 using mod 2.
@@ -652,13 +845,13 @@ func buildHeaderV0(meta *metadata, printerModel string) string {
 	fmt.Fprintf(&b, ";tool_head: %s\n", toolHead)
 	fmt.Fprintf(&b, ";machine: %s\n", machine)
 	fmt.Fprintf(&b, ";estimated_time(s): %.0f\n", estTime)
-	fmt.Fprintf(&b, ";nozzle_temperature(\u00b0C): %.0f\n", meta.nozzleTemp[0])
+	fmt.Fprintf(&b, ";nozzle_temperature(°C): %.0f\n", meta.nozzleTemp[0])
 	fmt.Fprintf(&b, ";nozzle_0_diameter(mm): %.1f\n", meta.nozzleDiameter[0])
 	fmt.Fprintf(&b, ";nozzle_0_material: %s\n", meta.filamentType[0])
-	fmt.Fprintf(&b, ";nozzle_1_temperature(\u00b0C): %.0f\n", meta.nozzleTemp[1])
+	fmt.Fprintf(&b, ";nozzle_1_temperature(°C): %.0f\n", meta.nozzleTemp[1])
 	fmt.Fprintf(&b, ";nozzle_1_diameter(mm): %.1f\n", meta.nozzleDiameter[1])
 	fmt.Fprintf(&b, ";nozzle_1_material: %s\n", meta.filamentType[1])
-	fmt.Fprintf(&b, ";build_plate_temperature(\u00b0C): %.0f\n", meta.bedTemp)
+	fmt.Fprintf(&b, ";build_plate_temperature(°C): %.0f\n", meta.bedTemp)
 	fmt.Fprintf(&b, ";max_x(mm): %.4f\n", meta.maxX)
 	fmt.Fprintf(&b, ";max_y(mm): %.4f\n", meta.maxY)
 	fmt.Fprintf(&b, ";max_z(mm): %.4f\n", meta.maxZ)
@@ -666,7 +859,7 @@ func buildHeaderV0(meta *metadata, printerModel string) string {
 	fmt.Fprintf(&b, ";min_y(mm): %.4f\n", meta.minY)
 	fmt.Fprintf(&b, ";min_z(mm): %.4f\n", meta.minZ)
 	fmt.Fprintf(&b, ";Extruder(s) Used = %d\n", extruderMask)
-	fmt.Fprintf(&b, ";matierial_weight: %.4f\n", weightG)     // deliberate typo matches firmware
+	fmt.Fprintf(&b, ";matierial_weight: %.4f\n", weightG)        // deliberate typo matches firmware
 	fmt.Fprintf(&b, ";matierial_length: %.5f\n", totalFilamentM) // deliberate typo matches firmware
 	if meta.thumbnail != "" {
 		fmt.Fprintf(&b, ";thumbnail: %s\n", meta.thumbnail)
@@ -715,64 +908,36 @@ func parseDuration(s string) float64 {
 	return total
 }
 
-// extractThumbnail scans raw gcode content for PrusaSlicer/OrcaSlicer thumbnail
-// blocks, takes the last (largest) one, strips comment prefixes, concatenates
-// the base64 data, and returns a data URI string. Returns "" if no thumbnail found.
-func extractThumbnail(content string) string {
-	var lastBlock string
+// IDEX mode strings as written into the V1 header by buildHeaderV1.
+const (
+	IDEXModeDefault     = "Default"
+	IDEXModeDuplication = "IDEX Duplication"
+	IDEXModeMirror      = "IDEX Mirror"
+	IDEXModeBackup      = "IDEX Backup"
+)
 
-	for {
-		startMarker := "; thumbnail begin"
-		startIdx := strings.Index(content, startMarker)
-		if startIdx < 0 {
+// DetectIDEXModeFromHeader streams the V1 header at the top of a processed
+// gcode file looking for the ";Extruder Mode:" line and returns its value.
+// Returns IDEXModeDefault if the file cannot be read, no header is present,
+// or the mode line is missing. Stops scanning at ";Header End" (or after 256
+// lines as a safety cap), so memory and I/O are bounded.
+func DetectIDEXModeFromHeader(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return IDEXModeDefault
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), scanBufMax)
+	for i := 0; i < 256 && scanner.Scan(); i++ {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, ";Header End") {
 			break
 		}
-
-		endMarker := "; thumbnail end"
-		endIdx := strings.Index(content[startIdx:], endMarker)
-		if endIdx < 0 {
-			break
-		}
-		endIdx += startIdx
-
-		// Extract the block between the markers.
-		// Find end of the "thumbnail begin" line.
-		blockStart := strings.IndexByte(content[startIdx:], '\n')
-		if blockStart < 0 {
-			break
-		}
-		blockStart += startIdx + 1
-
-		block := content[blockStart:endIdx]
-		lastBlock = block
-
-		// Advance past this block to find more.
-		content = content[endIdx+len(endMarker):]
-	}
-
-	if lastBlock == "" {
-		return ""
-	}
-
-	// Strip "; " prefix from each line and concatenate base64 data.
-	var b64 strings.Builder
-	for _, line := range strings.Split(lastBlock, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		// Strip leading "; " or ";" prefix.
-		line = strings.TrimPrefix(line, "; ")
-		line = strings.TrimPrefix(line, ";")
-		line = strings.TrimSpace(line)
-		if line != "" {
-			b64.WriteString(line)
+		if strings.HasPrefix(line, ";Extruder Mode:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, ";Extruder Mode:"))
 		}
 	}
-
-	if b64.Len() == 0 {
-		return ""
-	}
-
-	return "data:image/png;base64," + b64.String()
+	return IDEXModeDefault
 }

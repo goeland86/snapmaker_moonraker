@@ -95,43 +95,71 @@ func (s *Server) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(512 << 20); err != nil { // 512MB max
-		http.Error(w, "failed to parse form", http.StatusBadRequest)
+	// Use MultipartReader rather than ParseMultipartForm so the file part is
+	// streamed straight to disk rather than buffered in memory. Past behaviour
+	// loaded a 512 MB upload into RAM and OOM-killed the bridge on the Pi.
+	mr, err := r.MultipartReader()
+	if err != nil {
+		http.Error(w, "failed to parse multipart form", http.StatusBadRequest)
 		return
 	}
 
-	file, header, err := r.FormFile("file")
-	if err != nil {
+	root := "gcodes"
+	subdir := ""
+	startPrint := false
+	var filename string
+	var size int64
+	saved := false
+
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			http.Error(w, "failed reading part", http.StatusBadRequest)
+			return
+		}
+
+		switch part.FormName() {
+		case "root":
+			b, _ := io.ReadAll(io.LimitReader(part, 1024))
+			if v := strings.TrimSpace(string(b)); v != "" {
+				root = v
+			}
+		case "path":
+			b, _ := io.ReadAll(io.LimitReader(part, 4096))
+			subdir = strings.TrimSpace(string(b))
+		case "print":
+			b, _ := io.ReadAll(io.LimitReader(part, 16))
+			startPrint = strings.TrimSpace(string(b)) == "true"
+		case "file":
+			if part.FileName() == "" {
+				http.Error(w, "missing file name", http.StatusBadRequest)
+				return
+			}
+			filename = part.FileName()
+			if subdir != "" {
+				filename = subdir + "/" + filename
+			}
+			n, err := s.fileManager.SaveFromReader(root, filename, part)
+			if err != nil {
+				log.Printf("Failed to save file %s/%s: %v", root, filename, err)
+				http.Error(w, "failed to save file", http.StatusInternalServerError)
+				return
+			}
+			size = n
+			saved = true
+		}
+		part.Close()
+	}
+
+	if !saved {
 		http.Error(w, "missing file field", http.StatusBadRequest)
 		return
 	}
-	defer file.Close()
 
-	root := r.FormValue("root")
-	if root == "" {
-		root = "gcodes"
-	}
-
-	// In Moonraker's API, "path" is the subdirectory within the root,
-	// and the actual filename comes from the multipart file header.
-	filename := header.Filename
-	if subdir := r.FormValue("path"); subdir != "" {
-		filename = subdir + "/" + filename
-	}
-
-	data, err := io.ReadAll(file)
-	if err != nil {
-		http.Error(w, "failed to read file", http.StatusInternalServerError)
-		return
-	}
-
-	if err := s.fileManager.SaveFile(root, filename, data); err != nil {
-		log.Printf("Failed to save file %s/%s: %v", root, filename, err)
-		http.Error(w, "failed to save file", http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("File uploaded: %s/%s (%d bytes)", root, filename, len(data))
+	log.Printf("File uploaded: %s/%s (%d bytes)", root, filename, size)
 
 	// Get the real modification time from the saved file.
 	modTime := float64(time.Now().UnixNano()) / 1e9
@@ -140,16 +168,11 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// PrusaSlicer/OrcaSlicer send print=true for "Upload and Print".
-	startPrint := r.FormValue("print") == "true"
 	if startPrint && root == "gcodes" {
 		log.Printf("Upload and print requested for %s", filename)
+		srcPath := s.fileManager.FilePath("gcodes", filename)
 		go func() {
-			fileData, err := s.fileManager.ReadFile("gcodes", filename)
-			if err != nil {
-				log.Printf("Error reading uploaded file for print: %v", err)
-				return
-			}
-			if err := s.printerClient.Upload(filename, fileData); err != nil {
+			if err := s.printerClient.Upload(filename, srcPath); err != nil {
 				log.Printf("Error uploading to printer: %v", err)
 				return
 			}
@@ -165,7 +188,7 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 				"root":     root,
 				"path":     filename,
 				"modified": modTime,
-				"size":     len(data),
+				"size":     size,
 			},
 		},
 	})
@@ -176,7 +199,7 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 				"path":     filename,
 				"root":     root,
 				"modified": modTime,
-				"size":     len(data),
+				"size":     size,
 			},
 			"action": "create_file",
 		},

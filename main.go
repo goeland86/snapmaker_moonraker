@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/john/snapmaker_moonraker/database"
 	"github.com/john/snapmaker_moonraker/files"
+	"github.com/john/snapmaker_moonraker/gcode"
 	"github.com/john/snapmaker_moonraker/history"
 	"github.com/john/snapmaker_moonraker/moonraker"
 	"github.com/john/snapmaker_moonraker/printer"
@@ -224,7 +224,9 @@ func main() {
 
 		// Print state persistence: restore totalLines from state file after
 		// a restart, and write the state file when we have all the data.
-		if snap.PrinterState == "printing" && snap.PrintFileName != "" {
+		// Includes "paused" so a restart that lands during a paused print
+		// (a common diagnostic scenario) still recovers progress data.
+		if (snap.PrinterState == "printing" || snap.PrinterState == "paused") && snap.PrintFileName != "" {
 			if pc.TotalLines() == 0 && !printStateRestored {
 				// totalLines unknown — try to restore from state file or compute from file on disk.
 				if ps, ok := readPrintState(printStatePath); ok && ps.Filename == snap.PrintFileName && ps.TotalLines > 0 {
@@ -232,22 +234,29 @@ func main() {
 					printStateRestored = true
 					log.Printf("Restored totalLines=%d for %s from print state file", ps.TotalLines, ps.Filename)
 				} else {
-					// No state file or filename mismatch — try to count lines from the file on disk.
-					gcodeDir := fm.GetRootPath("gcodes")
-					fullPath := filepath.Join(gcodeDir, filepath.FromSlash(snap.PrintFileName))
-					if data, err := os.ReadFile(fullPath); err == nil {
-						lineCount := uint32(bytes.Count(data, []byte{'\n'}))
-						if lineCount > 0 {
+					// No state file or filename mismatch. The printer reports just
+					// the basename, but the file may live in any subdirectory under
+					// gcodes/, so walk the tree to find it. The line count must
+					// match the *processed* output the bridge would have uploaded
+					// (V0/V1 header + nozzle-shutoff insertions), not the raw
+					// source — otherwise progress would drift over the print.
+					if absPath, ok := fm.FindByBasename("gcodes", snap.PrintFileName); ok {
+						lineCount, err := gcode.CountProcessedLines(absPath, cfg.Printer.Model)
+						if err != nil {
+							log.Printf("Line count failed for %s: %v", absPath, err)
+						} else if lineCount > 0 {
 							pc.SetTotalLines(lineCount)
 							writePrintState(printStatePath, printState{
 								Filename:   snap.PrintFileName,
 								TotalLines: lineCount,
 							})
 							printStateWritten = true
-							log.Printf("Computed totalLines=%d for %s from file on disk", lineCount, snap.PrintFileName)
+							log.Printf("Computed totalLines=%d for %s (post-processing, source=%s)", lineCount, snap.PrintFileName, absPath)
 						}
+					} else {
+						log.Printf("Print file %s not found under gcodes/ — progress will be unavailable", snap.PrintFileName)
 					}
-					printStateRestored = true // don't retry file reads every poll cycle
+					printStateRestored = true // don't retry on every poll cycle
 				}
 			} else if !printStateWritten {
 				// totalLines is set (from Upload) but we haven't persisted it yet.

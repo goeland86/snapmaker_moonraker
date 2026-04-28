@@ -233,6 +233,34 @@ func (m *Manager) FilePath(root, filename string) string {
 	return filepath.Join(m.GetRootPath(root), filepath.FromSlash(filename))
 }
 
+// FindByBasename walks root looking for a file whose name matches basename.
+// The J1S firmware reports just the basename of the active print over SACP,
+// so when the bridge needs to locate the source file (e.g., to compute total
+// lines for a touchscreen-initiated print after a restart) it has to scan
+// subdirectories. If multiple files share a basename, the most recently
+// modified one wins — that's the most likely match for the active print,
+// since slicer output is usually fresh.
+func (m *Manager) FindByBasename(root, basename string) (absPath string, found bool) {
+	dir := m.GetRootPath(root)
+	var bestMod time.Time
+
+	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if filepath.Base(path) != basename {
+			return nil
+		}
+		if info.ModTime().After(bestMod) {
+			bestMod = info.ModTime()
+			absPath = path
+		}
+		return nil
+	})
+
+	return absPath, absPath != ""
+}
+
 // ReadFile reads a file from storage.
 func (m *Manager) ReadFile(root, filename string) ([]byte, error) {
 	path := filepath.Join(m.GetRootPath(root), filepath.FromSlash(filename))

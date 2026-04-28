@@ -140,6 +140,61 @@ func ProcessFile(srcPath, dstPath, printerModel string) (uint32, error) {
 	return uint32(headerLines + bodyLines), nil
 }
 
+// CountProcessedLines returns the line count that ProcessFile would write for
+// srcPath, by running pass 1 (metadata scan) only — no output is written. Use
+// this when the bridge needs to recover the post-processing line count for a
+// touchscreen-initiated print after a restart, where the file on disk is the
+// raw source and a naive newline count would miss the V0/V1 header and the
+// nozzle-shutoff lines that pass 2 inserts.
+func CountProcessedLines(srcPath, printerModel string) (uint32, error) {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return 0, fmt.Errorf("opening source gcode: %w", err)
+	}
+	defer src.Close()
+
+	alreadyProcessed, err := peekAlreadyProcessed(src)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return 0, err
+	}
+	if alreadyProcessed {
+		return countNewlines(src)
+	}
+
+	meta, srcLines, toolChanges, err := scanFile(src)
+	if err != nil {
+		return 0, fmt.Errorf("scanning gcode: %w", err)
+	}
+	finalizeMetadata(meta)
+
+	bodyLines := srcLines + countShutoffs(toolChanges, meta)
+	header := buildHeader(meta, printerModel, bodyLines)
+	headerLines := strings.Count(header, "\n")
+	return uint32(headerLines + bodyLines), nil
+}
+
+func countNewlines(r io.Reader) (uint32, error) {
+	buf := make([]byte, 64*1024)
+	var count uint32
+	for {
+		n, err := r.Read(buf)
+		for i := 0; i < n; i++ {
+			if buf[i] == '\n' {
+				count++
+			}
+		}
+		if err == io.EOF {
+			return count, nil
+		}
+		if err != nil {
+			return count, err
+		}
+	}
+}
+
 // peekAlreadyProcessed reads the first 64 lines of src looking for the
 // ";Header Start" marker that ProcessFile writes. The reader is left positioned
 // after the peek; callers must Seek(0) before re-reading.
